@@ -4,15 +4,18 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <getopt.h>
+#include <signal.h>
 #include "cpt_opt.h"
 #include "cpt_msgs.h"
+#include <lustre/lustreapi.h>
+
+static struct hsm_copytool_private	*cpt_data;
 
 /*
 ** Initializing and getting pre-running options for the daemon copytool.
 */
 
-void		init_opt(t_opt *cpt_opt)
-{
+void		init_opt(t_opt *cpt_opt) {
   cpt_opt->is_daemon = 0;
   cpt_opt->is_verbose = 0;
   cpt_opt->arch_ind_count = 0;
@@ -24,8 +27,7 @@ void		init_opt(t_opt *cpt_opt)
 ** Opt_get.
 */
 
-int		get_opt(int ac, char **av, t_opt *cpt_opt)
-{
+int		get_opt(int ac, char **av, t_opt *cpt_opt) {
   int		trig;
   struct option	long_opts[] = {
     {"archive",	required_argument,	NULL,			'A'},
@@ -39,36 +41,43 @@ int		get_opt(int ac, char **av, t_opt *cpt_opt)
 
   optind = 0;
   while ((trig = getopt_long(ac, av, "A:r:hv", long_opts, &opt_ind)) != -1)
-    switch (trig)
-      {
-      case 'A':
-	if ((cpt_opt->arch_ind_count >= MAX_ARCH)
-	    || ((unsigned int)atoi(optarg) >= MAX_ARCH))
-	  {
-	    fprintf(stdout, "Archive number must be less"
-		    "than %zu.\n", MAX_ARCH);
-	    return (-E2BIG);
-	  }
-	cpt_opt->arch_ind[cpt_opt->arch_ind_count++] = atoi(optarg);
-	if (cpt_opt->arch_ind_count <= MAX_ARCH)
-	  cpt_opt->arch_ind[cpt_opt->arch_ind_count] = 0;
-	break;
-      case 'r':
-	cpt_opt->ring_mp = optarg;
-	break;
-      case 'h':
-	usage();
-	return (-EINVAL);
-      case 'v':
-	cpt_opt->is_verbose = 1;
-	break;
+    switch (trig) {
+    case 'A':
+      if ((cpt_opt->arch_ind_count >= MAX_ARCH)
+	  || ((unsigned int)atoi(optarg) >= MAX_ARCH)) {
+	fprintf(stdout, "Archive number must be less"
+		"than %zu.\n", MAX_ARCH);
+	return (-E2BIG);
       }
-  if (ac != optind + 1)
-    {
-      fprintf(stdout, "No lustre mount point specified.\n");
-      return (-EINVAL);
+      cpt_opt->arch_ind[cpt_opt->arch_ind_count++] = atoi(optarg);
+      if (cpt_opt->arch_ind_count <= MAX_ARCH)
+	cpt_opt->arch_ind[cpt_opt->arch_ind_count] = 0;
+      break;
+    case 'r':
+      cpt_opt->ring_mp = optarg;
+      break;
+    case 'h':
+      return (usage());
+    case 'v':
+      cpt_opt->is_verbose = 1;
+      break;
     }
+  if (ac < 4) {
+    fprintf(stdout, "Invalid options, try --help or -h for more informations.\n");
+    return (-EINVAL);
+    }
+  if (ac != optind + 1 && optind >= MIN_OPT) {
+    fprintf(stdout, "No lustre mount point specified.\n");
+    return (-EINVAL);
+  }
   cpt_opt->lustre_mp = av[optind];
+  if (cpt_opt->ring_mp == NULL || cpt_opt->lustre_mp == NULL) {
+    if (cpt_opt->ring_mp == NULL)
+      fprintf(stdout, "Must specify a root directory for the ring.\n");
+    if (cpt_opt->lustre_mp == NULL)
+      fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
+    return (-EINVAL);
+  }
   return (1);
 }
 
@@ -76,34 +85,81 @@ int		get_opt(int ac, char **av, t_opt *cpt_opt)
 ** Initializing daemon-mode.
 */
 
-int		daemonize(t_opt *cpt_opt)
-{
+int		daemonize(t_opt *cpt_opt) {
+  int		ret;
+  
+  if (cpt_opt->is_daemon) {
+    if ((ret = daemon(1, 1)) < 0)
+      return (-(ret = errno));
+    fprintf(stdout, "Daemon created.\n");
+  }
+  return (1);
+}
+
+/*
+** sig_hander
+*/
+
+static void	sighand(int sig) {
+  psignal(sig, "exiting");
+  llapi_hsm_copytool_unregister(&cpt_data);
+  exit(1);
+}
+
+/*
+** cpt_functions.
+*/
+
+static int	cpt_run(t_opt *cpt_opt) {
   int		ret;
 
-  if (cpt_opt->is_daemon)
-    {
-      if ((ret = daemon(1, 1)) < 0)
-	return (-(ret = errno));
-      fprintf(stdout, "Daemon created.\n");
-    }
+  ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt->lustre_mp,
+				    cpt_opt->arch_ind_count,
+				    cpt_opt->arch_ind, 0);
+  if (ret < 0) {
+    fprintf(stdout, "Cannot start copytool interface.\n");
+    return (ret);
+  }
+  signal(SIGINT, sighand);
+  signal(SIGTERM, sighand);
+  while (1) {
+  }
   return (1);
+}
+
+static int	cpt_setup() {
+  return (1);
+}
+
+/*
+** Free structures if done.
+*/
+
+void		free_end(t_opt *cpt_opt) {
+  if (cpt_opt->ring_mp)
+    free(cpt_opt->ring_mp);
+  if (cpt_opt->lustre_mp)
+    free(cpt_opt->lustre_mp);
 }
 
 /*
 ** Main.
 */
 
-int		main(int ac, char **av)
-{
+int		main(int ac, char **av) {
   int		ret;
   t_opt		cpt_opt;
-
+  
   init_opt(&cpt_opt);
-  if ((ret = get_opt(ac, av, &cpt_opt)) < 0)
+  if ((ret = get_opt(ac, av, &cpt_opt)) < 0) {
     return (ret);
-  if (cpt_opt.is_daemon)
-    if ((ret = (daemonize(&cpt_opt))) < 0)
+  }
+  if (cpt_opt.is_daemon) {
+    if ((ret = (daemonize(&cpt_opt))) < 0) {
+      free_end(&cpt_opt);
       return (ret);
+    }
+  }
   fprintf(stdout, "(dev msg) Values retrieved :\n"
 	  "is_daemon : %d\n"
 	  "is_verbose : %d\n"
@@ -118,5 +174,8 @@ int		main(int ac, char **av)
     fprintf(stdout, "(dev msg) Archive index retrieved :\n"
 	    "index %d\n",
 	    cpt_opt.arch_ind[i]);
+  ret = cpt_setup();
+  ret = cpt_run(&cpt_opt);
+  free_end(&cpt_opt);
   return (1);
 }

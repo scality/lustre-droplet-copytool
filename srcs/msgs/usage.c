@@ -1,12 +1,51 @@
 #include <stdio.h>
+#include <errno.h>
 
-int		usage(void)
-{
+int		usage(void) {
   fprintf(stdout,
-	  "Usage :\n"
-	 "blablabla\n"
-	 "blablabla\n"
-	 "blablabla\n"
-	  "blablabla\n");
-  return (-1);
+	  " Usage: [options]... <mode> <lustre_mount_point>\n"
+	  "The Lustre HSM Posix copy tool can be used as a daemon or "
+	  "as a command line tool\n"
+	  "The Lustre HSM daemon acts on action requests from Lustre\n"
+	  "to copy files to and from an HSM archive system.\n"
+	  "This POSIX-flavored daemon makes regular POSIX filesystem calls\n"
+	  "to an HSM mounted at a given hsm_root.\n"
+	  "   --daemon            Daemon mode, run in background\n"
+	  " Options:\n"
+	  "   --no-attr           Don't copy file attributes\n"
+	  "   --no-shadow         Don't create shadow namespace in archive\n"
+	  "   --no-xattr          Don't copy file extended attributes\n"
+	  "The Lustre HSM tool performs administrator-type actions\n"
+	  "on a Lustre HSM archive.\n"
+	  "This POSIX-flavored tool can link an existing HSM namespace\n"
+	  "into a Lustre filesystem.\n"
+	  " Usage:\n"
+	  "    [options] --import <src> <dst> <lustre_mount_point>\n"
+	  "      import an archived subtree from\n"
+	  "       <src> (FID or relative path to hsm_root) into the Lustre\n"
+	  "             filesystem at\n"
+	  "       <dst> (absolute path)\n"
+	  "    [options] --rebind <old_FID> <new_FID> <lustre_mount_point>\n"
+	  "      rebind an entry in the HSM to a new FID\n"
+	  "       <old_FID> old FID the HSM entry is bound to\n"
+	  "       <new_FID> new FID to bind the HSM entry to\n"
+	  "    [options] --rebind <list_file> <lustre_mount_point>\n"
+	  "      perform the rebind operation for all FID in the list file\n"
+	  "       each line of <list_file> consists of <old_FID> <new_FID>\n"
+	  "    [options] --max-sequence <fsname>\n"
+	  "       return the max fid sequence of archived files\n"
+	  "   --abort-on-error          Abort operation on major error\n"
+	  "   -A, --archive <#>         Archive number (repeatable)\n"
+	  "   -b, --bandwidth <bw>      Limit I/O bandwidth (unit can be used\n,"
+	  "                             default is MB)\n"
+	  "   --dry-run                 Don't run, just show what would be done\n"
+	  "   -c, --chunk-size <sz>     I/O size used during data copy\n"
+	  "                             (unit can be used, default is MB)\n"
+	  "   -f, --event-fifo <path>   Write events stream to fifo\n"
+	  "   -p, --hsm-root <path>     Target HSM mount point\n"
+	  "   -q, --quiet               Produce less verbose output\n"
+	  "   -u, --update-interval <s> Interval between progress reports sent\n"
+	  "                             to Coordinator\n"
+	  "   -v, --verbose             Produce more verbose output\n");
+  return (-EINVAL);
 }

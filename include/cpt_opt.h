@@ -3,6 +3,7 @@
 
 # include	<asm/types.h>
 
+# define	MIN_OPT		(4)
 # define	MAX_ARCH	(sizeof(__u32) * 8)
 
 typedef struct	s_opt
