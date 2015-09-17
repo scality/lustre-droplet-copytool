@@ -1,0 +1,208 @@
+#!/bin/bash
+# set -x
+set -e
+
+# lfs_migrate: a simple tool to copy and check files.
+#
+# To avoid allocating objects on one or more OSTs, they should be
+# deactivated on the MDS via "lctl --device {device_number} deactivate",
+# where {device_number} is from the output of "lctl dl" on the MDS.
+#
+# To guard against corruption, the file is compared after migration
+# to verify the copy is correct and the file has not been modified.
+# This is not a protection against the file being open by another
+# process, but it would catch the worst cases of in-use files, but
+# to be 100% safe the administrator needs to ensure this is safe.
+
+RSYNC=${RSYNC:-rsync}
+ECHO=echo
+LFS=${LFS:-lfs}
+LFS_SIZE_OPT="-s"
+
+usage() {
+    cat -- <<USAGE 1>&2
+usage: lfs_migrate [-c <stripe_count>] [-h] [-l] [-n] [-q] [-R] [-s] [-y] [-0]
+                   [file|dir ...]
+    -c <stripe_count>
+       restripe file using the specified stripe count
+    -h show this usage message
+    -l migrate files with hard links (skip by default)
+    -n only print the names of files to be migrated
+    -q run quietly (don't print filenames or status)
+    -R restripe file using default directory striping
+    -s skip file data comparison after migrate
+    -y answer 'y' to usage question
+    -0 input file names on stdin are separated by a null character
+
+The -c <stripe_count> option may not be specified at the same time as
+the -R option.
+
+If a directory is an argument, all files in the directory are migrated.
+If no file/directory is given, the file list is read from standard input.
+
+e.g.: lfs_migrate /mnt/lustre/dir
+      lfs find /test -O test-OST0004 -size +4G | lfs_migrate -y
+USAGE
+    exit 1
+}
+
+OPT_CHECK=y
+OPT_STRIPE_COUNT=""
+
+while getopts "c:hlnqRsy0" opt $*; do
+    case $opt in
+	c) OPT_STRIPE_COUNT=$OPTARG;;
+	l) OPT_NLINK=y;;
+	n) OPT_DRYRUN=n; OPT_YES=y;;
+	q) ECHO=:;;
+	R) OPT_RESTRIPE=y;;
+	s) OPT_CHECK="";;
+	y) OPT_YES=y;;
+	0) OPT_NULL=y;;
+	h|\?) usage;;
+    esac
+done
+shift $((OPTIND - 1))
+
+if [ "$OPT_STRIPE_COUNT" -a "$OPT_RESTRIPE" ]; then
+	echo ""
+	echo "$(basename $0) error: The -c <stripe_count> option may not" 1>&2
+	echo "be specified at the same time as the -R option." 1>&2
+	exit 1
+fi
+
+if [ -z "$OPT_YES" ]; then
+	echo ""
+	echo "lfs_migrate is currently NOT SAFE for moving in-use files." 1>&2
+	echo "Use it only when you are sure migrated files are unused." 1>&2
+	echo "" 1>&2
+	echo "If emptying OST(s) that are not disabled on the MDS, new" 1>&2
+	echo "files may use them.  To prevent MDS allocating any files on" 1>&2
+	echo "OSTNNNN run 'lctl --device %{fsname}-OSTNNNN-osc deactivate'" 1>&2
+	echo "on the MDS." 1>&2
+	echo -n "Continue? (y/n) "
+	read CHECK
+	[ "$CHECK" != "y" -a "$CHECK" != "yes" ] && exit 1
+fi
+
+# if rsync has --xattr support, then try to copy the xattrs.
+$RSYNC --help 2>&1 | grep -q xattr && RSYNC_OPTS="$RSYNC_OPTS -X"
+$RSYNC --help 2>&1 | grep -q acls && RSYNC_OPTS="$RSYNC_OPTS -A"
+# If rsync copies lustre xattrs in the future, then we can skip lfs (bug 22189)
+strings $(which $RSYNC) 2>&1 | grep -q lustre && LFS=:
+
+# rsync creates its temporary files with lenient permissions, even if
+# permissions on the original files are more strict. Tighten umask here
+# to avoid the brief window where unprivileged users might be able to
+# access the temporary file.
+umask 0077
+
+# This is needed for 1.8 Interoperability and can be removed in the future
+$LFS getstripe --help 2>&1 | grep -q stripe-size && LFS_SIZE_OPT="-S"
+
+lfs_migrate() {
+	local RSYNC_MODE=false
+
+	while IFS='' read -d '' OLDNAME; do
+		$ECHO -n "$OLDNAME: "
+
+		# avoid duplicate stat if possible
+		TYPE_LINK=($(LANG=C stat -c "%h %F" "$OLDNAME" || true))
+
+		# skip non-regular files, since they don't have any objects
+		# and there is no point in trying to migrate them.
+		if [ "${TYPE_LINK[1]}" != "regular" ]; then
+			echo -e "not a regular file, skipped"
+			continue
+		fi
+
+		if [ -z "$OPT_NLINK" -a ${TYPE_LINK[0]} -gt 1 ]; then
+			echo -e "multiple hard links, skipped"
+			continue
+		fi
+
+		# working out write perms is hard, let the shell do it
+		if [ ! -w "$OLDNAME" ]; then
+			echo -e "no write permission, skipped"
+			continue
+		fi
+
+		if [ "$OPT_DRYRUN" ]; then
+			echo -e "dry run, skipped"
+			continue
+		fi
+
+		if [ "$OPT_RESTRIPE" ]; then
+			UNLINK=""
+		else
+		# if rsync copies Lustre xattrs properly in the future
+		# (i.e. before the file data, so that it preserves striping)
+		# then we don't need to do this getstripe/mktemp stuff.
+			UNLINK="-u"
+
+			[ "$OPT_STRIPE_COUNT" ] && COUNT=$OPT_STRIPE_COUNT ||
+				COUNT=$($LFS getstripe -c "$OLDNAME" \
+					2> /dev/null)
+			SIZE=$($LFS getstripe $LFS_SIZE_OPT "$OLDNAME" \
+			       2> /dev/null)
+
+			[ -z "$COUNT" -o -z "$SIZE" ] && UNLINK=""
+			SIZE=${LFS_SIZE_OPT}${SIZE}
+		fi
+
+		# first try to migrate inside lustre
+		# if failed go back to old rsync mode
+		if [[ $RSYNC_MODE == false ]]; then
+			if $LFS migrate -c${COUNT} ${SIZE} "$OLDNAME"; then
+				$ECHO "done"
+				continue
+			else
+				echo "falling back to rsync-based migration"
+				RSYNC_MODE=true
+			fi
+		fi
+
+		NEWNAME=$(mktemp $UNLINK "$OLDNAME.tmp.XXXXXX")
+		if [ $? -ne 0 -o -z "$NEWNAME" ]; then
+			echo -e "\r$OLDNAME: can't make temp file, skipped" 1>&2
+			continue
+		fi
+
+		[ "$UNLINK" ] && $LFS setstripe -c${COUNT} ${SIZE} "$NEWNAME"
+
+		# we use --inplace, since we created our own temp file already
+		if ! $RSYNC -a --inplace $RSYNC_OPTS "$OLDNAME" "$NEWNAME";then
+			echo -e "\r$OLDNAME: copy error, exiting" 1>&2
+			rm -f "$NEWNAME"
+			exit 4
+		fi
+
+		if [ "$OPT_CHECK" ] && ! cmp "$OLDNAME" "$NEWNAME"; then
+			echo -e "\r$NEWNAME: compare failed, exiting" 1>&2
+			exit 8
+		fi
+
+		if ! mv "$NEWNAME" "$OLDNAME"; then
+			echo -e "\r$OLDNAME: rename error, exiting" 1>&2
+			exit 12
+		fi
+		$ECHO "done"
+	done
+}
+
+if [ "$#" -eq 0 ]; then
+	if [ "$OPT_NULL" ]; then
+		lfs_migrate
+	else
+		tr '\n' '\0' | lfs_migrate
+	fi
+else
+	while [ "$1" ]; do
+		if [ -d "$1" ]; then
+			lfs find "$1" -type f -print0 | lfs_migrate
+		else
+			echo -en "$1\0" | lfs_migrate
+		fi
+		shift
+	done
+fi

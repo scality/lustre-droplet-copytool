@@ -1,0 +1,68 @@
+#
+# GPL HEADER START
+#
+# DO NOT ALTER OR REMOVE COPYRIGHT NOTICES OR THIS FILE HEADER.
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License version 2 only,
+# as published by the Free Software Foundation.
+#
+# This program is distributed in the hope that it will be useful, but
+# WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+# General Public License version 2 for more details (a copy is included
+# in the LICENSE file that accompanied this code).
+#
+# You should have received a copy of the GNU General Public License
+# version 2 along with this program; If not, see
+# http://www.sun.com/software/products/lustre/docs/GPLv2.pdf
+#
+# Please contact Sun Microsystems, Inc., 4150 Network Circle, Santa Clara,
+# CA 95054 USA or visit www.sun.com if you need additional information or
+# have any questions.
+#
+# GPL HEADER END
+#
+
+#
+# Copyright (c) 2008, 2010, Oracle and/or its affiliates. All rights reserved.
+# Use is subject to license terms.
+#
+# Copyright (c) 2012, 2014, Intel Corporation.
+#
+
+#
+# This file is part of Lustre, http://www.lustre.org/
+# Lustre is a trademark of Sun Microsystems, Inc.
+#
+
+SUBDIRS = linux util
+DIST_SUBDIRS = linux util
+
+noinst_LIBRARIES= libcfs.a
+libcfs_a_SOURCES = user-string.c
+
+libcfs_a_CPPFLAGS = $(LLCPPFLAGS)
+libcfs_a_CFLAGS = $(LLCFLAGS)
+
+if UTILS
+lib_LIBRARIES = libcfsutil.a
+libcfsutil_a_SOURCES = nidstrings.c libcfs_string.c util/parser.c	\
+		util/l_ioctl.c util/util.c
+libcfsutil_a_CPPFLAGS = $(LLCPPFLAGS)
+libcfsutil_a_CFLAGS = $(LLCFLAGS) -DLUSTRE_UTILS=1
+endif
+
+if MODULES
+
+if LINUX
+modulenet_DATA := libcfs$(KMODEXT)
+endif
+
+endif # MODULES
+
+MOSTLYCLEANFILES := @MOSTLYCLEANFILES@ linux-*.c linux/*.o libcfs
+EXTRA_DIST := $(libcfs-all-objs:%.o=%.c) tracefile.h prng.c \
+	      workitem.c \
+	      kernel_user_comm.c fail.c libcfs_cpu.c heap.c \
+	      libcfs_mem.c libcfs_lock.c user-string.c

@@ -1,0 +1,98 @@
+Index: linux-stage/fs/ext4/super.c
+===================================================================
+--- linux-stage.orig/fs/ext4/super.c
++++ linux-stage/fs/ext4/super.c
+@@ -1117,9 +1117,53 @@ static ssize_t ext4_quota_read(struct su
+ static ssize_t ext4_quota_write(struct super_block *sb, int type,
+ 				const char *data, size_t len, loff_t off);
+ 
++static int ext4_dquot_initialize(struct inode *inode, int type)
++{
++	handle_t *handle;
++	int ret, err;
++
++	if (IS_NOQUOTA(inode))
++		return 0;
++
++	/* We may create quota structure so we need to reserve enough blocks */
++	handle = ext4_journal_start(inode, 2*EXT4_QUOTA_INIT_BLOCKS(inode->i_sb));
++	if (IS_ERR(handle))
++		return PTR_ERR(handle);
++	ret = dquot_initialize(inode, type);
++	err = ext4_journal_stop(handle);
++	if (!ret)
++		ret = err;
++	return ret;
++}
++
++static int ext4_dquot_drop(struct inode *inode)
++{
++	handle_t *handle;
++	int ret, err;
++
++	if (IS_NOQUOTA(inode))
++		return 0;
++
++	/* We may delete quota structure so we need to reserve enough blocks */
++	handle = ext4_journal_start(inode, 2*EXT4_QUOTA_DEL_BLOCKS(inode->i_sb));
++	if (IS_ERR(handle)) {
++		/*
++		 * We call dquot_drop() anyway to at least release references
++		 * to quota structures so that umount does not hang.
++		 */
++		dquot_drop(inode);
++		return PTR_ERR(handle);
++	}
++	ret = dquot_drop(inode);
++	err = ext4_journal_stop(handle);
++	if (!ret)
++		ret = err;
++	return ret;
++}
++
+ static const struct dquot_operations ext4_quota_operations = {
+-	.initialize	= dquot_initialize,
+-	.drop		= dquot_drop,
++	.initialize	= ext4_dquot_initialize,
++	.drop		= ext4_dquot_drop,
+ 	.alloc_space	= dquot_alloc_space,
+ 	.reserve_space	= dquot_reserve_space,
+ 	.claim_space	= dquot_claim_space,
+Index: linux-stage/fs/ext4/inode.c
+===================================================================
+--- linux-stage.orig/fs/ext4/inode.c
++++ linux-stage/fs/ext4/inode.c
+@@ -222,6 +222,7 @@ void ext4_delete_inode(struct inode *ino
+ {
+ 	handle_t *handle;
+ 	int err;
++	int extra_credits = 3;
+ 
+ 	if (ext4_should_order_data(inode))
+ 		ext4_begin_ordered_truncate(inode, 0);
+@@ -230,7 +231,10 @@ void ext4_delete_inode(struct inode *ino
+ 	if (is_bad_inode(inode))
+ 		goto no_delete;
+ 
+-	handle = ext4_journal_start(inode, blocks_for_truncate(inode)+3);
++	if (!IS_NOQUOTA(inode))
++		extra_credits += 2 * EXT4_QUOTA_DEL_BLOCKS(inode->i_sb);
++	handle = ext4_journal_start(inode,
++			blocks_for_truncate(inode) + extra_credits);
+ 	if (IS_ERR(handle)) {
+ 		ext4_std_error(inode->i_sb, PTR_ERR(handle));
+ 		/*
+@@ -266,10 +270,10 @@ void ext4_delete_inode(struct inode *ino
+ 	 * enough credits left in the handle to remove the inode from
+ 	 * the orphan list and set the dtime field.
+ 	 */
+-	if (!ext4_handle_has_enough_credits(handle, 3)) {
+-		err = ext4_journal_extend(handle, 3);
++	if (!ext4_handle_has_enough_credits(handle, extra_credits)) {
++		err = ext4_journal_extend(handle, extra_credits);
+ 		if (err > 0)
+-			err = ext4_journal_restart(handle, 3);
++			err = ext4_journal_restart(handle, extra_credits);
+ 		if (err != 0) {
+ 			ext4_warning(inode->i_sb,
+ 				     "couldn't extend journal (err %d)", err);
