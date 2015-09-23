@@ -1,6 +1,6 @@
 CC              := gcc
 
-CFLAGS		:= -O2 -W -Wall -Wextra
+CFLAGS		:= -O2 -Wno-unused-parameter -Wno-sign-compare
 
 DFLAGS		:= -g3
 

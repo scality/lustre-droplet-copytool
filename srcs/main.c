@@ -1,3 +1,4 @@
+#include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <errno.h>
@@ -10,6 +11,19 @@
 #include <lustre/lustreapi.h>
 
 static struct hsm_copytool_private	*cpt_data;
+static char				fs_name[MAX_OBD_NAME + 1];
+static int				arch_fd;
+
+typedef struct	s_opt
+{
+  int		is_daemon;
+  int		is_verbose;
+  int		arch_ind[MAX_ARCH];
+  unsigned int	arch_ind_count;
+  char		*ring_mp;
+  char		*lustre_mp;
+  int		lustre_mp_fd;
+}		t_opt;
 
 /*
 ** Initializing and getting pre-running options for the daemon copytool.
@@ -21,6 +35,7 @@ void		init_opt(t_opt *cpt_opt) {
   cpt_opt->arch_ind_count = 0;
   cpt_opt->ring_mp = NULL;
   cpt_opt->lustre_mp = NULL;
+  cpt_opt->lustre_mp_fd = -1;
 }
 
 /*
@@ -122,12 +137,46 @@ static int	cpt_run(t_opt *cpt_opt) {
   }
   signal(SIGINT, sighand);
   signal(SIGTERM, sighand);
+
   while (1) {
+    struct hsm_action_list	*hal;
+    struct hsm_action_item	*hai;
+    int				msg_size;
+    
+    ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
+    if (ret == -ESHUTDOWN) {
+      fprintf(stdout, "Shutting down.\n");
+      break;
+    }
+    fprintf(stdout, "Copytool fs=%s, archive#=%d, item_count=%d",
+	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
+    hai = hai_first(hal);
+    return (1);
   }
-  return (1);
 }
 
-static int	cpt_setup() {
+static int	cpt_setup(t_opt *cpt_opt) {
+  int		ret;
+
+  arch_fd = -1;
+  if ((arch_fd = open(cpt_opt->ring_mp, O_RDONLY)) < 0) {
+    ret = -errno;
+    fprintf(stdout, "Can't open archive at '%s'.\n",
+	    cpt_opt->ring_mp);
+    return (ret);
+  }
+  ret = llapi_search_fsname(cpt_opt->lustre_mp, fs_name);
+  if (ret < 0) {
+    fprintf(stdout, "Cannot find a Lustre FS mounted at '%s'.\n",
+	    cpt_opt->lustre_mp);
+    return (ret);
+  }
+  if ((cpt_opt->lustre_mp_fd = open(cpt_opt->lustre_mp, O_RDONLY)) < 0) {
+    ret = -errno;
+    fprintf(stdout, "Cannot open mount point at '%s'.\n",
+	    cpt_opt->lustre_mp);
+    return (ret);
+  }
   return (1);
 }
 
@@ -174,7 +223,7 @@ int		main(int ac, char **av) {
     fprintf(stdout, "(dev msg) Archive index retrieved :\n"
 	    "index %d\n",
 	    cpt_opt.arch_ind[i]);
-  ret = cpt_setup();
+  ret = cpt_setup(&cpt_opt);
   ret = cpt_run(&cpt_opt);
   free_end(&cpt_opt);
   return (1);
