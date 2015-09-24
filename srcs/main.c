@@ -150,9 +150,16 @@ static int	cpt_run(t_opt *cpt_opt) {
     }
     fprintf(stdout, "Copytool fs=%s, archive#=%d, item_count=%d",
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
+    // check fs_name with strcmp.
     hai = hai_first(hal);
-    return (1);
+    // Need to figure out if this is the storage. Async func in it.
+    /*for (i = 0; i <= hal->hal_count; ++i) {
+      ret = ct_process_item_async(hai, hal->hal_flags);
+      hai = hai_next(hai);
+      }*/
   }
+  llapi_hsm_copytool_unregister(&cpt_data);
+  return (ret);
 }
 
 static int	cpt_setup(t_opt *cpt_opt) {
@@ -177,18 +184,7 @@ static int	cpt_setup(t_opt *cpt_opt) {
 	    cpt_opt->lustre_mp);
     return (ret);
   }
-  return (1);
-}
-
-/*
-** Free structures if done.
-*/
-
-void		free_end(t_opt *cpt_opt) {
-  if (cpt_opt->ring_mp)
-    free(cpt_opt->ring_mp);
-  if (cpt_opt->lustre_mp)
-    free(cpt_opt->lustre_mp);
+  return (ret);
 }
 
 /*
@@ -205,7 +201,7 @@ int		main(int ac, char **av) {
   }
   if (cpt_opt.is_daemon) {
     if ((ret = (daemonize(&cpt_opt))) < 0) {
-      free_end(&cpt_opt);
+      //free_end(&cpt_opt);
       return (ret);
     }
   }
@@ -218,13 +214,19 @@ int		main(int ac, char **av) {
 	  cpt_opt.is_verbose,
 	  cpt_opt.ring_mp,
 	  cpt_opt.lustre_mp);
+
+  //debug mode.
   unsigned int	i;
   for (i = 0; i < cpt_opt.arch_ind_count; i += 1)
     fprintf(stdout, "(dev msg) Archive index retrieved :\n"
 	    "index %d\n",
 	    cpt_opt.arch_ind[i]);
-  ret = cpt_setup(&cpt_opt);
-  ret = cpt_run(&cpt_opt);
-  free_end(&cpt_opt);
-  return (1);
+
+  if ((ret = cpt_setup(&cpt_opt)) < 0)
+    return (ret);
+  if ((ret = cpt_run(&cpt_opt)) < 0)
+    return (ret);
+  if ((ret = cpt_cleanup(&cpt_opt)) < 0)
+    return (ret);
+  return (ret);
 }
