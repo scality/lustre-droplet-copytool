@@ -128,9 +128,12 @@ static void	sighand(int sig) {
 static int	cpt_run(t_opt *cpt_opt) {
   int		ret;
 
+  //debug to remove.
+  fprintf(stdout, "DEBUG_PRE_REGISTER.\n");
   ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt->lustre_mp,
 				    cpt_opt->arch_ind_count,
 				    cpt_opt->arch_ind, 0);
+  fprintf(stdout, "DEBUG_POST_REGISTER.\n");
   if (ret < 0) {
     fprintf(stdout, "Cannot start copytool interface.\n");
     return (ret);
@@ -143,7 +146,10 @@ static int	cpt_run(t_opt *cpt_opt) {
     struct hsm_action_item	*hai;
     int				msg_size;
     
+    //debug to remove.
+    fprintf(stdout, "DEBUG_PRE_RECV.\n");
     ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
+    fprintf(stdout, "DEBUG_POST_RECV.\n");
     if (ret == -ESHUTDOWN) {
       fprintf(stdout, "Shutting down.\n");
       break;
@@ -184,6 +190,7 @@ static int	cpt_setup(t_opt *cpt_opt) {
 	    cpt_opt->lustre_mp);
     return (ret);
   }
+  fprintf(stdout, "Debug mode : Setup worked.\n");
   return (ret);
 }
 
