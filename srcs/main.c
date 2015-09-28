@@ -21,8 +21,8 @@ typedef struct	s_opt
   int		arch_ind[MAX_ARCH];
   unsigned int	arch_ind_count;
   char		*ring_mp;
-  char		*lustre_mp;
-  int		lustre_mp_fd;
+  char		*o_mnt;
+  int		o_mnt_fd;
 }		t_opt;
 
 /*
@@ -34,8 +34,9 @@ void		init_opt(t_opt *cpt_opt) {
   cpt_opt->is_verbose = 0;
   cpt_opt->arch_ind_count = 0;
   cpt_opt->ring_mp = NULL;
-  cpt_opt->lustre_mp = NULL;
-  cpt_opt->lustre_mp_fd = -1;
+  cpt_opt->o_mnt = NULL;
+  cpt_opt->o_mnt_fd = -1;
+  cpt_data = NULL;
 }
 
 /*
@@ -85,11 +86,11 @@ int		get_opt(int ac, char **av, t_opt *cpt_opt) {
     fprintf(stdout, "No lustre mount point specified.\n");
     return (-EINVAL);
   }
-  cpt_opt->lustre_mp = av[optind];
-  if (cpt_opt->ring_mp == NULL || cpt_opt->lustre_mp == NULL) {
+  cpt_opt->o_mnt = av[optind];
+  if (cpt_opt->ring_mp == NULL || cpt_opt->o_mnt == NULL) {
     if (cpt_opt->ring_mp == NULL)
       fprintf(stdout, "Must specify a root directory for the ring.\n");
-    if (cpt_opt->lustre_mp == NULL)
+    if (cpt_opt->o_mnt == NULL)
       fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
     return (-EINVAL);
   }
@@ -128,12 +129,9 @@ static void	sighand(int sig) {
 static int	cpt_run(t_opt *cpt_opt) {
   int		ret;
 
-  //debug to remove.
-  fprintf(stdout, "DEBUG_PRE_REGISTER.\n");
-  ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt->lustre_mp,
+  ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt->o_mnt,
 				    cpt_opt->arch_ind_count,
 				    cpt_opt->arch_ind, 0);
-  fprintf(stdout, "DEBUG_POST_REGISTER.\n");
   if (ret < 0) {
     fprintf(stdout, "Cannot start copytool interface.\n");
     return (ret);
@@ -146,18 +144,16 @@ static int	cpt_run(t_opt *cpt_opt) {
     struct hsm_action_item	*hai;
     int				msg_size;
     
-    //debug to remove.
-    fprintf(stdout, "DEBUG_PRE_RECV.\n");
     ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
-    fprintf(stdout, "DEBUG_POST_RECV.\n");
     if (ret == -ESHUTDOWN) {
       fprintf(stdout, "Shutting down.\n");
       break;
     }
-    fprintf(stdout, "Copytool fs=%s, archive#=%d, item_count=%d",
+    fprintf(stdout, "Copytool fs=%s, archive#=%d, item_count=%d.\n",
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
     // check fs_name with strcmp.
     hai = hai_first(hal);
+    fprintf(stdout, "Action done : %s\n", hsm_copytool_action2name(hai->hai_action));
     // Need to figure out if this is the storage. Async func in it.
     /*for (i = 0; i <= hal->hal_count; ++i) {
       ret = ct_process_item_async(hai, hal->hal_flags);
@@ -178,16 +174,16 @@ static int	cpt_setup(t_opt *cpt_opt) {
 	    cpt_opt->ring_mp);
     return (ret);
   }
-  ret = llapi_search_fsname(cpt_opt->lustre_mp, fs_name);
+  ret = llapi_search_fsname(cpt_opt->o_mnt, fs_name);
   if (ret < 0) {
     fprintf(stdout, "Cannot find a Lustre FS mounted at '%s'.\n",
-	    cpt_opt->lustre_mp);
+	    cpt_opt->o_mnt);
     return (ret);
   }
-  if ((cpt_opt->lustre_mp_fd = open(cpt_opt->lustre_mp, O_RDONLY)) < 0) {
+  if ((cpt_opt->o_mnt_fd = open(cpt_opt->o_mnt, O_RDONLY)) < 0) {
     ret = -errno;
     fprintf(stdout, "Cannot open mount point at '%s'.\n",
-	    cpt_opt->lustre_mp);
+	    cpt_opt->o_mnt);
     return (ret);
   }
   fprintf(stdout, "Debug mode : Setup worked.\n");
@@ -220,7 +216,7 @@ int		main(int ac, char **av) {
 	  cpt_opt.is_daemon,
 	  cpt_opt.is_verbose,
 	  cpt_opt.ring_mp,
-	  cpt_opt.lustre_mp);
+	  cpt_opt.o_mnt);
 
   //debug mode.
   unsigned int	i;
