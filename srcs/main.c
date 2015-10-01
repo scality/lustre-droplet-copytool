@@ -9,6 +9,9 @@
 #include "cpt_opt.h"
 #include "cpt_msgs.h"
 #include <lustre/lustreapi.h>
+#include <openssl/bn.h>
+
+#define	KEY_SIZE  159
 
 static struct hsm_copytool_private	*cpt_data;
 static char				fs_name[MAX_OBD_NAME + 1];
@@ -142,6 +145,7 @@ static int	cpt_run(t_opt *cpt_opt) {
   while (1) {
     struct hsm_action_list	*hal;
     struct hsm_action_item	*hai;
+    BIGNUM			*BN = NULL;
     int				msg_size;
     
     ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
@@ -153,7 +157,18 @@ static int	cpt_run(t_opt *cpt_opt) {
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
     // check fs_name with strcmp.
     hai = hai_first(hal);
-    fprintf(stdout, "Action done : %s\n", hsm_copytool_action2name(hai->hai_action));
+    fprintf(stdout, "Action done : %s\nFID : %lu, %u, %u\n",
+	    hsm_copytool_action2name(hai->hai_action), hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver);
+    if (!(BN = BN_new()))
+      return (-ENOMEM);
+    BN_set_bit(BN, KEY_SIZE);
+    BN_clear_bit(BN, KEY_SIZE);
+    dpl_uks_gen_key_raw(BN, (hai->hai_fid.f_ver >> 8), hai->hai_fid.f_seq, hai->hai_fid.f_oid, 0,
+			((hai->hai_fid.f_ver & 0xFF) << 16));
+    char			*tmp;
+    tmp = BN_bn2hex(BN);
+    fprintf(stdout, "BIGNUM = %s\n", tmp);
+    OPENSSL_free(tmp);
     // Need to figure out if this is the storage. Async func in it.
     /*for (i = 0; i <= hal->hal_count; ++i) {
       ret = ct_process_item_async(hai, hal->hal_flags);
