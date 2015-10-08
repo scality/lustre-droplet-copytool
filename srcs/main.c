@@ -1,3 +1,4 @@
+#include <sys/mman.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -11,9 +12,10 @@
 #include <lustre/lustreapi.h>
 #include <lustre/lustre_idl.h>
 #include <openssl/bn.h>
+#include <droplet.h>
 
 /*
-** not to keep
+** To change defines
 */
 
 #define REPORT_INTERVAL_DEFAULT	30
@@ -65,7 +67,6 @@ struct options opt = {
 
 #define	REP_RET_VAL	1
 
-static struct hsm_copytool_private	*ctdata;
 static struct hsm_copytool_private	*cpt_data;
 static char				fs_name[MAX_OBD_NAME + 1];
 static int				arch_fd;
@@ -100,23 +101,37 @@ void		init_opt(void) {
 */
 
 /*
-** Opt_get.
+** Opt_get
 */
 
-int		get_opt(int ac, char **av) {
+static int	check_val_dp(char *str, int is)
+{
+  if (is == 0) {
+  } else if (is == 1) {
+  } else {
+    return(-REP_RET_VAL);
+  }
+  return (1);
+}
+
+int		get_opt(int ac, char **av, dpl_ctx_t *ctx) {
   int		trig;
   struct option	long_opts[] = {
-    {"archive",	required_argument,	NULL,			'A'},
-    {"daemon",	no_argument,		&cpt_opt.is_daemon,	1},
-    {"ring",	required_argument,	0,			'r'},
-    {"help",	no_argument,		0,			'h'},
-    {"verbose",	no_argument,		0,			'v'},
+    {"archive",		required_argument,	NULL,			'A'},
+    {"daemon",		no_argument,		&cpt_opt.is_daemon,	1},
+    {"ring",		required_argument,	0,			'r'},
+    {"help",		no_argument,		0,			'h'},
+    {"verbose",		no_argument,		0,			'v'},
+    {"droplet-path",	required_argument,	0,			'p'},
+    {"droplet-name",	required_argument,	0,			'n'},
     {0, 0, 0, 0}
   };
   int		opt_ind = 0;
+  char		*d_path = NULL;
+  char		*d_name = NULL;
 
   optind = 0;
-  while ((trig = getopt_long(ac, av, "A:r:hv", long_opts, &opt_ind)) != -1)
+  while ((trig = getopt_long(ac, av, "A:r:hvn:p:", long_opts, &opt_ind)) != -1)
     switch (trig) {
     case 'A':
       if ((cpt_opt.arch_ind_count >= MAX_ARCH)
@@ -137,7 +152,18 @@ int		get_opt(int ac, char **av) {
     case 'v':
       cpt_opt.is_verbose = 1;
       break;
+    case 'p':
+      d_path = optarg;
+      break;
+    case 'n':
+      d_name = optarg;
+      break;
     }
+  fprintf(stdout, "name = %s - path = %s\n", d_name, d_path);
+  if ((!d_path) || (!d_name)) {
+    fprintf(stdout, "No specified droplet_profile path or name.\n");
+    return (-EINVAL);
+  }
   if (ac < 4) {
     fprintf(stdout, "Invalid options, try --help or -h for more informations.\n");
     return (-EINVAL);
@@ -147,6 +173,8 @@ int		get_opt(int ac, char **av) {
     return (-EINVAL);
   }
   cpt_opt.o_mnt = av[optind];
+  if (!(ctx = dpl_ctx_new(d_path, d_name)))
+    return (-EINVAL);
   if (cpt_opt.ring_mp == NULL || cpt_opt.o_mnt == NULL) {
     if (cpt_opt.ring_mp == NULL)
       fprintf(stdout, "Must specify a root directory for the ring.\n");
@@ -186,34 +214,75 @@ static void	sighand(int sig) {
 ** get / put data
 */
 
-static int	get_data(const struct hsm_action_item *hai, const long hal_flags) {
+static int	archive_data(const struct hsm_action_item *hai, const long hal_flags, dpl_ctx_t *ctx, const BIGNUM *BN)
+{
+  char				*buff_data;
   int				ret;
   struct hsm_copyaction_private	*hcp = NULL;
-  char				fid[128];
-  char				path[PATH_MAX];
   char				src[PATH_MAX];
-  long long			recno = -1;
-  int				linkno = 0;
-  //int				src_fd = -1;
+  struct stat			src_st;
+  int				src_fd = -1;
+  char				*BNHEX;
+  dpl_option_t			dpl_opts = {
+    .mask = DPL_OPTION_CONSISTENT,
+  };
 
-  sprintf(fid, DFID, PFID(&hai->hai_fid));
-  ret = llapi_fid2path(cpt_opt.o_mnt, fid, path, sizeof(path), &recno, &linkno);
-  if (ret < 0) {
-    fprintf(stdout, "Cannot get path of FID %s\n", fid);
-    return (-REP_RET_VAL);
-  }
-  fprintf(stdout, "FID PATH retrieved : %s\n", path);
   if ((ret = ct_begin(&hcp, hai)) < 0)
     return (-REP_RET_VAL);
   ct_path_lustre(src, sizeof(src), cpt_opt.o_mnt, &hai->hai_dfid);
-  return (REP_RET_VAL);
+  fprintf(stdout, "DEBUG SRC: %s\n", src);
+  src_fd = llapi_hsm_action_get_fd(hcp);
+  fprintf(stdout, "DEBUG SRC FD : %d\n", src_fd);
+  if ((fstat(src_fd, &src_st)) < 0) {
+    fprintf(stdout, "Couldn't stat '%s'\n", src);
+    return (-errno);
+    }
+  if (!(BNHEX = BN_bn2hex(BN)))
+    return (-ENOMEM);
+  buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
+  dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, NULL, NULL, buff_data, src_st.st_size);
+  OPENSSL_free(BNHEX);
+ return (0);
+}
+
+static int	process_action(const struct hsm_action_item *hai, const long hal_flags, dpl_ctx_t *ctx, const BIGNUM *BN) {
+  int				ret;
+  char				fid[128];
+  char				path[PATH_MAX];
+  long long			recno = -1;
+  int				linkno = 0;
+
+  sprintf(fid, DFID, PFID(&hai->hai_fid));
+  ret = llapi_fid2path(cpt_opt.o_mnt, fid, path,
+		       sizeof(path), &recno, &linkno);
+  if (ret < 0)
+    fprintf(stdout, "Cannot get path of FID %s\n", fid);
+  else
+    fprintf(stdout, "Processing file '%s'\n", path);
+
+  switch (hai->hai_action) {
+  case HSMA_ARCHIVE:
+    ret = archive_data(hai, hal_flags, ctx, BN);
+    break;
+  case HSMA_RESTORE:
+    break;
+  case HSMA_REMOVE:
+    break;
+  case HSMA_CANCEL:
+    return (-REP_RET_VAL);
+  default:
+    ret = -EINVAL;
+    fprintf(stdout, "Unknown action %d, on %s\n",
+	    hai->hai_action, cpt_opt.o_mnt);
+  }
+  return (0);
 }
 
 /*
 ** cpt_functions.
 */
 
-static int	cpt_run() {
+static int	cpt_run(dpl_ctx_t *ctx) {
   int		ret;
 
   ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt.o_mnt,
@@ -242,7 +311,7 @@ static int	cpt_run() {
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
     // check fs_name with strcmp.
     hai = hai_first(hal);
-    for (i = 0; i <= hal->hal_count; ++i) {
+    for (i = 0; i < hal->hal_count; ++i) {
       char			*tmp;
 
       if (!(BN = BN_new()))
@@ -254,8 +323,7 @@ static int	cpt_run() {
       tmp = BN_bn2hex(BN);
       fprintf(stdout, "BIGNUM = %s\n", tmp);
       OPENSSL_free(tmp);
-      if (strcmp(hsm_copytool_action2name(hai->hai_action), "ARCHIVE") == 0)
-	get_data(hai, hal->hal_flags);
+      process_action(hai, hal->hal_flags, ctx, BN);
       hai = hai_next(hai);
     }
   }
@@ -295,14 +363,14 @@ static int	cpt_setup() {
 
 int		main(int ac, char **av) {
   int		ret;
+  dpl_ctx_t	*ctx;
   
   init_opt();
-  if ((ret = get_opt(ac, av)) < 0) {
+  if ((ret = get_opt(ac, av, ctx)) < 0) {
     return (ret);
   }
   if (cpt_opt.is_daemon) {
     if ((ret = (daemonize())) < 0) {
-      //free_end();
       return (ret);
     }
   }
@@ -325,7 +393,7 @@ int		main(int ac, char **av) {
 
   if ((ret = cpt_setup()) < 0)
     return (ret);
-  if ((ret = cpt_run()) < 0)
+  if ((ret = cpt_run(ctx)) < 0)
     return (ret);
   if ((ret = cpt_cleanup()) < 0)
     return (ret);

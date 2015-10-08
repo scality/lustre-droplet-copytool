@@ -52,14 +52,14 @@ OBJS            := $(OBJS_P)main.o\
 all: 		$(NAME)
 
 $(NAME):
-		$(CC) -c $(SRCS) $(CFLAGS) -I$(HEADER_PATH) -I$(LUSTRE_STABLE)lustre/include -I$(LUSTRE_STABLE)lnet/include -I$(LUSTRE_STABLE)lustre/utils -I$(LUSTRE_STABLE)libcfs/include -I$(CLIENT_270)usr/src/lustre-2.7.0 -I$(CLIENT_270)usr/src/lustre-2.7.0/lustre/include -DLUSTRE_UTILS -DCONFIG_LUSTRE_OBD_MAX_IOCTL_BUFFER=8192 -D_GNU_SOURCE
+		$(CC) -c $(SRCS) $(CFLAGS) -I$(HEADER_PATH) -I$(LUSTRE_STABLE)lustre/include -I$(LUSTRE_STABLE)lnet/include -I$(LUSTRE_STABLE)lustre/utils -I$(LUSTRE_STABLE)libcfs/include -I$(CLIENT_270)usr/src/lustre-2.7.0 -I$(CLIENT_270)usr/src/lustre-2.7.0/lustre/include -I/usr/local/include/droplet-3.0 -DLUSTRE_UTILS -DCONFIG_LUSTRE_OBD_MAX_IOCTL_BUFFER=8192 -D_GNU_SOURCE
 		@mv $(TMP) $(OBJS_P)
 		$(CC) -o $(NAME) $(OBJS) $(LDFLAGS)
 
 debug:		$(DEBUG)
 
 $(DEBUG):
-		$(CC) -c $(SRCS) $(DFLAGS) $(CFLAGS) -I$(HEADER_PATH) -I$(LUSTRE_STABLE)lustre/include -I$(LUSTRE_STABLE)lnet/include -I$(LUSTRE_STABLE)lustre/utils -I$(LUSTRE_STABLE)libcfs/include -I$(CLIENT_270)usr/src/lustre-2.7.0 -I$(CLIENT_270)usr/src/lustre-2.7.0/lustre/include -DLUSTRE_UTILS -DCONFIG_LUSTRE_OBD_MAX_IOCTL_BUFFER=8192 -D_GNU_SOURCE
+		$(CC) -c $(SRCS) $(DFLAGS) $(CFLAGS) -I$(HEADER_PATH) -I$(LUSTRE_STABLE)lustre/include -I$(LUSTRE_STABLE)lnet/include -I$(LUSTRE_STABLE)lustre/utils -I$(LUSTRE_STABLE)libcfs/include -I$(CLIENT_270)usr/src/lustre-2.7.0 -I$(CLIENT_270)usr/src/lustre-2.7.0/lustre/include -I/usr/local/include/droplet-3.0 -DLUSTRE_UTILS -DCONFIG_LUSTRE_OBD_MAX_IOCTL_BUFFER=8192 -D_GNU_SOURCE
 		@mv $(TMP) $(OBJS_P)
 		$(CC) -o $(DEBUG) $(OBJS) $(LDFLAGS)
 
