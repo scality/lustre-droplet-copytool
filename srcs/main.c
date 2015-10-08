@@ -97,24 +97,44 @@ void		init_opt(void) {
 }
 
 /*
-** not to keep goes here.
+** tmp syntax
 */
+
+static int
+ct_path_lustre(char *buf,
+	       int size,
+	       const char *mnt,
+	       const lustre_fid *fid) {
+  return (snprintf(buf, size, "%s/%s/fid/"DFID_NOBRACE, mnt,
+		   dot_lustre_name, PFID(fid)));
+}
+
+static int
+ct_begin_restore(struct hsm_copyaction_private **phcp,
+		 const struct hsm_action_item *hai,
+		 int mdt_index,
+		 int open_flags) {
+  int	 ret;
+  char	 src[PATH_MAX];
+  
+  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags,
+			       false);
+  if (ret < 0) {
+    ct_path_lustre(src, sizeof(src), cpt_opt.o_mnt, &hai->hai_fid);
+    fprintf(stdout, "llapi_hsm_action_begin() on '%s' failed\n", src);
+  }
+  
+  return (ret);
+}
 
 /*
 ** Opt_get
 */
 
-static int	check_val_dp(char *str, int is)
-{
-  if (is == 0) {
-  } else if (is == 1) {
-  } else {
-    return(-REP_RET_VAL);
-  }
-  return (1);
-}
-
-int		get_opt(int ac, char **av, dpl_ctx_t *ctx) {
+int
+get_opt(int ac,
+	char **av,
+	dpl_ctx_t *ctx) {
   int		trig;
   struct option	long_opts[] = {
     {"archive",		required_argument,	NULL,			'A'},
@@ -189,7 +209,8 @@ int		get_opt(int ac, char **av, dpl_ctx_t *ctx) {
 ** Initializing daemon-mode.
 */
 
-int		daemonize() {
+int
+daemonize() {
   int		ret;
   
   if (cpt_opt.is_daemon) {
@@ -204,7 +225,8 @@ int		daemonize() {
 ** sig_hander
 */
 
-static void	sighand(int sig) {
+static void
+sighand(int sig) {
   psignal(sig, "exiting");
   llapi_hsm_copytool_unregister(&cpt_data);
   exit(1);
@@ -214,8 +236,11 @@ static void	sighand(int sig) {
 ** get / put data
 */
 
-static int	archive_data(const struct hsm_action_item *hai, const long hal_flags, dpl_ctx_t *ctx, const BIGNUM *BN)
-{
+static int
+archive_data(const struct hsm_action_item *hai,
+	     const long hal_flags,
+	     dpl_ctx_t *ctx,
+	     const BIGNUM *BN) {
   char				*buff_data;
   int				ret;
   struct hsm_copyaction_private	*hcp = NULL;
@@ -223,11 +248,14 @@ static int	archive_data(const struct hsm_action_item *hai, const long hal_flags,
   struct stat			src_st;
   int				src_fd = -1;
   char				*BNHEX;
+  char				lstr[PATH_MAX];
+  int				hp_flags = 0;
+  int				ct_rc = 0;
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
   };
 
-  if ((ret = ct_begin(&hcp, hai)) < 0)
+  if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
     return (-REP_RET_VAL);
   ct_path_lustre(src, sizeof(src), cpt_opt.o_mnt, &hai->hai_dfid);
   fprintf(stdout, "DEBUG SRC: %s\n", src);
@@ -242,10 +270,22 @@ static int	archive_data(const struct hsm_action_item *hai, const long hal_flags,
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
   dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, NULL, NULL, buff_data, src_st.st_size);
   OPENSSL_free(BNHEX);
- return (0);
+  if (src_fd > 0) {
+    fprintf(stdout, "fd on %s successfully closed.\n", src);
+    close(src_fd);
+  }
+  fprintf(stdout, "Action completed, notifying coordinator.\n");
+  ct_path_lustre(lstr, sizeof(lstr), cpt_opt.o_mnt, &hai->hai_fid);
+  ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc));
+  //if ret < 0 check
+  return (ret);
 }
 
-static int	process_action(const struct hsm_action_item *hai, const long hal_flags, dpl_ctx_t *ctx, const BIGNUM *BN) {
+static int
+process_action(const struct hsm_action_item *hai,
+	       const long hal_flags,
+	       dpl_ctx_t *ctx,
+	       const BIGNUM *BN) {
   int				ret;
   char				fid[128];
   char				path[PATH_MAX];
@@ -262,7 +302,8 @@ static int	process_action(const struct hsm_action_item *hai, const long hal_flag
 
   switch (hai->hai_action) {
   case HSMA_ARCHIVE:
-    ret = archive_data(hai, hal_flags, ctx, BN);
+    if ((ret = archive_data(hai, hal_flags, ctx, BN)) < 0)
+      fprintf(stdout, "Archive failed.\n");
     break;
   case HSMA_RESTORE:
     break;
@@ -282,7 +323,8 @@ static int	process_action(const struct hsm_action_item *hai, const long hal_flag
 ** cpt_functions.
 */
 
-static int	cpt_run(dpl_ctx_t *ctx) {
+static int
+cpt_run(dpl_ctx_t *ctx) {
   int		ret;
 
   ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt.o_mnt,
@@ -331,7 +373,8 @@ static int	cpt_run(dpl_ctx_t *ctx) {
   return (ret);
 }
 
-static int	cpt_setup() {
+static int
+cpt_setup() {
   int		ret;
 
   arch_fd = -1;
@@ -361,7 +404,9 @@ static int	cpt_setup() {
 ** Main.
 */
 
-int		main(int ac, char **av) {
+int
+main(int ac,
+     char **av) {
   int		ret;
   dpl_ctx_t	*ctx;
   
