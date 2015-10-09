@@ -236,6 +236,27 @@ sighand(int sig) {
 ** get / put data
 */
 
+/*static int
+restore_data(const struct hsm_action_item *hai,
+	     const long hal_flags,
+	     dpl_ctx_t *ctx,
+	     const BIGNUM *BN) {
+  char		*buff_data;
+  struct stat	src_st;
+  int		src_fd = -1;
+  char		*BNHEX;
+  int		ret;
+  dpl_option_t	dpl_opts = {
+    .mask = DPL_OPTION_CONSISTENT,
+  };
+
+  src_fd = llapi_hsm_action_get_fd(hcp);
+  if (!(BNHEX = BN_bn2hex(BN)))
+    return (-ENOMEM);
+  dpl_get_id(dpl_ctx_t *ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, src_st.st_size, NULL, NULL);
+  return (ret);
+  }*/
+
 static int
 archive_data(const struct hsm_action_item *hai,
 	     const long hal_flags,
@@ -275,6 +296,7 @@ archive_data(const struct hsm_action_item *hai,
     close(src_fd);
   }
   fprintf(stdout, "Action completed, notifying coordinator.\n");
+  // check ptr value not NULL for hcp
   ct_path_lustre(lstr, sizeof(lstr), cpt_opt.o_mnt, &hai->hai_fid);
   ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc));
   //if ret < 0 check
@@ -320,6 +342,28 @@ process_action(const struct hsm_action_item *hai,
 }
 
 /*
+** hash [24 md5(total) ^ 8 f_ver lsb] - oid [f_seq] - volid [f_oid] - srv [] - spec [f_ver 24 msb]
+*/
+
+BIGNUM *
+uks_key_from_fid(int64_t f_seq, int32_t f_oid, int32_t f_ver) {
+  uint32_t		BN_hash;
+  int			ver_lsb;
+  BIGNUM		*BN;
+
+  if (!(BN = BN_new()))
+    return (NULL);
+  BN_set_bit(BN, KEY_SIZE);
+  BN_clear_bit(BN, KEY_SIZE);
+  ver_lsb = f_ver & 0xFF;
+  dpl_uks_gen_key(BN, f_seq, f_oid, 0, (f_ver >> 8));
+  BN_hash = dpl_uks_hash_get(BN);
+  BN_hash ^= ver_lsb;
+  dpl_uks_hash_set(BN, BN_hash);
+  return (BN);
+}
+
+/*
 ** cpt_functions.
 */
 
@@ -356,12 +400,8 @@ cpt_run(dpl_ctx_t *ctx) {
     for (i = 0; i < hal->hal_count; ++i) {
       char			*tmp;
 
-      if (!(BN = BN_new()))
+      if (!(BN = uks_key_from_fid(hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver)))
 	return (-ENOMEM);
-      BN_set_bit(BN, KEY_SIZE);
-      BN_clear_bit(BN, KEY_SIZE);
-      dpl_uks_gen_key_raw(BN, (hai->hai_fid.f_ver >> 8), hai->hai_fid.f_seq, hai->hai_fid.f_oid, 0,
-			  ((hai->hai_fid.f_ver & 0xFF) << 16));
       tmp = BN_bn2hex(BN);
       fprintf(stdout, "BIGNUM = %s\n", tmp);
       OPENSSL_free(tmp);
