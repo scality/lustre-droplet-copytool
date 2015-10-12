@@ -100,8 +100,6 @@ void		init_opt(void) {
 ** tmp syntax
 */
 
-
-
 /*
 ** Opt_get
 */
@@ -296,6 +294,17 @@ restore_data(const struct hsm_action_item *hai,
 
   offset = hai->hai_extent.lenght;
   pwrite(dst_fd, buff_data, src_st.st_size, offset);
+  if (!(src_fd < 0))
+    close(src_fd);
+  if (!(dst_fd < 0))
+    close(dst_fd);
+  OPENSSL_free(BNHEX);
+  if (buff_data)
+    free(buff_data);
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
+    fprintf(stdout, "Couldn' notify properly the coordinator.\n");
+    return (ret);
+  }
   return (ret);
 }
 
@@ -340,8 +349,7 @@ archive_data(const struct hsm_action_item *hai,
   fprintf(stdout, "Action completed, notifying coordinator.\n");
   // check ptr value not NULL for hcp
   ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
-  ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc));
-  if (ret < 0) {
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
     fprintf(stdout, "Couldn' notify properly the coordinator.\n");
     return (ret);
   }
