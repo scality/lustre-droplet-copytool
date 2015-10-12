@@ -78,8 +78,8 @@ struct		s_opt
   int		arch_ind[MAX_ARCH];
   unsigned int	arch_ind_count;
   char		*ring_mp;
-  char		*o_mnt;
-  int		o_mnt_fd;
+  char		*lustre_mp;
+  int		lustre_mp_fd;
 }		cpt_opt;
 
 /*
@@ -91,8 +91,8 @@ void		init_opt(void) {
   cpt_opt.is_verbose = 0;
   cpt_opt.arch_ind_count = 0;
   cpt_opt.ring_mp = NULL;
-  cpt_opt.o_mnt = NULL;
-  cpt_opt.o_mnt_fd = -1;
+  cpt_opt.lustre_mp = NULL;
+  cpt_opt.lustre_mp_fd = -1;
   cpt_data = NULL;
 }
 
@@ -100,32 +100,7 @@ void		init_opt(void) {
 ** tmp syntax
 */
 
-static int
-ct_path_lustre(char *buf,
-	       int size,
-	       const char *mnt,
-	       const lustre_fid *fid) {
-  return (snprintf(buf, size, "%s/%s/fid/"DFID_NOBRACE, mnt,
-		   dot_lustre_name, PFID(fid)));
-}
 
-static int
-ct_begin_restore(struct hsm_copyaction_private **phcp,
-		 const struct hsm_action_item *hai,
-		 int mdt_index,
-		 int open_flags) {
-  int	 ret;
-  char	 src[PATH_MAX];
-  
-  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags,
-			       false);
-  if (ret < 0) {
-    ct_path_lustre(src, sizeof(src), cpt_opt.o_mnt, &hai->hai_fid);
-    fprintf(stdout, "llapi_hsm_action_begin() on '%s' failed\n", src);
-  }
-  
-  return (ret);
-}
 
 /*
 ** Opt_get
@@ -192,13 +167,13 @@ get_opt(int ac,
     fprintf(stdout, "No lustre mount point specified.\n");
     return (-EINVAL);
   }
-  cpt_opt.o_mnt = av[optind];
+  cpt_opt.lustre_mp = av[optind];
   if (!(ctx = dpl_ctx_new(d_path, d_name)))
     return (-EINVAL);
-  if (cpt_opt.ring_mp == NULL || cpt_opt.o_mnt == NULL) {
+  if (cpt_opt.ring_mp == NULL || cpt_opt.lustre_mp == NULL) {
     if (cpt_opt.ring_mp == NULL)
       fprintf(stdout, "Must specify a root directory for the ring.\n");
-    if (cpt_opt.o_mnt == NULL)
+    if (cpt_opt.lustre_mp == NULL)
       fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
     return (-EINVAL);
   }
@@ -236,26 +211,93 @@ sighand(int sig) {
 ** get / put data
 */
 
-/*static int
+static int
 restore_data(const struct hsm_action_item *hai,
 	     const long hal_flags,
 	     dpl_ctx_t *ctx,
 	     const BIGNUM *BN) {
-  char		*buff_data;
-  struct stat	src_st;
-  int		src_fd = -1;
-  char		*BNHEX;
-  int		ret;
-  dpl_option_t	dpl_opts = {
+  struct hsm_extent	he;
+  struct hsm_copyaction_private	*hcp = NULL;
+  char			*buff_data;
+  char			src[PATH_MAX];
+  char			dst[PATH_MAX];
+  struct stat		src_st;
+  struct stat		dst_st;
+  int			src_fd = -1;
+  int			dst_fd = -1;
+  char			lov_buf[XATTR_SIZE_MAX];
+  size_t		lov_size = sizeof(lov_buf);
+  char			*BNHEX;
+  int			mdt_ind = -1;
+  int			open_flags = 0;
+  int			ret;
+  bool			set_lovea;
+  struct lu_fid		dfid;
+  dpl_option_t		dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
   };
+  __u64			offset;
 
-  src_fd = llapi_hsm_action_get_fd(hcp);
+  ct_path_archive(src, sizeof(src), cpt_opt.ring_mp, &hai->hai_fid);
+  if ((ret = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_ind)) < 0) {
+    fprintf(stdout, "Cannot get MDT index "DFID".\n", PFID(&hai->hai_fid));
+    return (ret);
+  }
+  if ((ret = ct_load_stripe(src, lov_buf, &lov_size)) < 0) {
+    fprintf(stdout, "Cannot get stripe rules for '%s', use default.\n", src);
+    set_lovea = false;
+  } else {
+    open_flags |= O_LOV_DELAY_CREATE;
+    set_lovea = true;
+  }
+  //
+  if ((ret = ct_begin_restore(&hcp, hai, mdt_ind, open_flags)) < 0)
+    return (-REP_RET_VAL);
+  //
+  if ((ret = llapi_hsm_action_get_dfid(hcp, &dfid)) < 0) {
+    fprintf(stdout, "Restoring "DFID", cannot get FID of created volatile file.\n",
+	    PFID(&hai->hai_fid));
+    return (-REP_RET_VAL);
+  }
+  //
+  snprintf(dst, sizeof(dst), "{VOLATILE}="DFID, PFID(&dfid));
+  fprintf(stdout, "Restoring data from the ring from '%s' to '%s'.\n", src,dst);
+  //
+  if ((dst_fd = llapi_hsm_action_get_fd(hcp)) < 0) {
+    fprintf(stdout, "Cannot open '%s' for write.\n", dst);
+    return (-REP_RET_VAL);
+    }
+  if ((src_fd = open(src, O_RDONLY | O_NOATIME | O_NOFOLLOW)) < 0) {
+    fprintf(stdout, "Cannot open '%s' to read.\n", src);
+    return (-REP_RET_VAL);
+  }
+  if ((fstat(src_fd, &src_st)) < 0) {
+    fprintf(stdout, "Couldn't stat '%s'\n", src);
+    return (-errno);
+  }  
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
-  dpl_get_id(dpl_ctx_t *ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, src_st.st_size, NULL, NULL);
+  dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, src_st.st_size, NULL, NULL);
+  if (!S_ISREG(src_st.st_mode)) {
+    fprintf(stdout, "'%s' is not a regular file.\n", src);
+    return (-EINVAL);
+  }
+  if (!S_ISREG(dst_st.st_mode)) {
+    fprintf(stdout, "'%s' is not a regular file.\n", dst);
+    return (-EINVAL);
+  }
+  // check needed
+  he.offset = offset;
+  he.length = 0;
+  if ((ret = llapi_hsm_action_progress(hcp, &he, length, 0)) < 0) {
+    fprintf(stdout, "Progress ioctl for copy '%s'->'%s' failed.\n", src, dst);
+    return (-REP_RET_VAL);
+  }
+
+  offset = hai->hai_extent.lenght;
+  pwrite(dst_fd, buff_data, src_st.st_size, offset);
   return (ret);
-  }*/
+}
 
 static int
 archive_data(const struct hsm_action_item *hai,
@@ -278,7 +320,7 @@ archive_data(const struct hsm_action_item *hai,
 
   if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
     return (-REP_RET_VAL);
-  ct_path_lustre(src, sizeof(src), cpt_opt.o_mnt, &hai->hai_dfid);
+  ct_path_lustre(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_dfid);
   fprintf(stdout, "DEBUG SRC: %s\n", src);
   src_fd = llapi_hsm_action_get_fd(hcp);
   fprintf(stdout, "DEBUG SRC FD : %d\n", src_fd);
@@ -297,9 +339,12 @@ archive_data(const struct hsm_action_item *hai,
   }
   fprintf(stdout, "Action completed, notifying coordinator.\n");
   // check ptr value not NULL for hcp
-  ct_path_lustre(lstr, sizeof(lstr), cpt_opt.o_mnt, &hai->hai_fid);
+  ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
   ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc));
-  //if ret < 0 check
+  if (ret < 0) {
+    fprintf(stdout, "Couldn' notify properly the coordinator.\n");
+    return (ret);
+  }
   return (ret);
 }
 
@@ -315,7 +360,7 @@ process_action(const struct hsm_action_item *hai,
   int				linkno = 0;
 
   sprintf(fid, DFID, PFID(&hai->hai_fid));
-  ret = llapi_fid2path(cpt_opt.o_mnt, fid, path,
+  ret = llapi_fid2path(cpt_opt.lustre_mp, fid, path,
 		       sizeof(path), &recno, &linkno);
   if (ret < 0)
     fprintf(stdout, "Cannot get path of FID %s\n", fid);
@@ -336,7 +381,7 @@ process_action(const struct hsm_action_item *hai,
   default:
     ret = -EINVAL;
     fprintf(stdout, "Unknown action %d, on %s\n",
-	    hai->hai_action, cpt_opt.o_mnt);
+	    hai->hai_action, cpt_opt.lustre_mp);
   }
   return (0);
 }
@@ -371,7 +416,7 @@ static int
 cpt_run(dpl_ctx_t *ctx) {
   int		ret;
 
-  ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt.o_mnt,
+  ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt.lustre_mp,
 				    cpt_opt.arch_ind_count,
 				    cpt_opt.arch_ind, 0);
   if (ret < 0) {
@@ -424,16 +469,16 @@ cpt_setup() {
 	    cpt_opt.ring_mp);
     return (ret);
   }
-  ret = llapi_search_fsname(cpt_opt.o_mnt, fs_name);
+  ret = llapi_search_fsname(cpt_opt.lustre_mp, fs_name);
   if (ret < 0) {
     fprintf(stdout, "Cannot find a Lustre FS mounted at '%s'.\n",
-	    cpt_opt.o_mnt);
+	    cpt_opt.lustre_mp);
     return (ret);
   }
-  if ((cpt_opt.o_mnt_fd = open(cpt_opt.o_mnt, O_RDONLY)) < 0) {
+  if ((cpt_opt.lustre_mp_fd = open(cpt_opt.lustre_mp, O_RDONLY)) < 0) {
     ret = -errno;
     fprintf(stdout, "Cannot open mount point at '%s'.\n",
-	    cpt_opt.o_mnt);
+	    cpt_opt.lustre_mp);
     return (ret);
   }
   fprintf(stdout, "Debug mode : Setup worked.\n");
@@ -467,7 +512,7 @@ main(int ac,
 	  cpt_opt.is_daemon,
 	  cpt_opt.is_verbose,
 	  cpt_opt.ring_mp,
-	  cpt_opt.o_mnt);
+	  cpt_opt.lustre_mp);
 
   //debug mode.
   unsigned int	i;
