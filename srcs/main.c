@@ -77,7 +77,7 @@ struct		s_opt
   int		is_verbose;
   int		arch_ind[MAX_ARCH];
   unsigned int	arch_ind_count;
-  char		*ring_mp;
+  //char		*ring_mp;
   char		*lustre_mp;
   int		lustre_mp_fd;
 }		cpt_opt;
@@ -90,7 +90,7 @@ void		init_opt(void) {
   cpt_opt.is_daemon = 0;
   cpt_opt.is_verbose = 0;
   cpt_opt.arch_ind_count = 0;
-  cpt_opt.ring_mp = NULL;
+  //cpt_opt.ring_mp = NULL;
   cpt_opt.lustre_mp = NULL;
   cpt_opt.lustre_mp_fd = -1;
   cpt_data = NULL;
@@ -100,6 +100,8 @@ void		init_opt(void) {
 ** tmp syntax
 */
 
+
+
 /*
 ** Opt_get
 */
@@ -107,12 +109,12 @@ void		init_opt(void) {
 int
 get_opt(int ac,
 	char **av,
-	dpl_ctx_t *ctx) {
+	dpl_ctx_t **ctx) {
   int		trig;
   struct option	long_opts[] = {
     {"archive",		required_argument,	NULL,			'A'},
     {"daemon",		no_argument,		&cpt_opt.is_daemon,	1},
-    {"ring",		required_argument,	0,			'r'},
+    //{"ring",		required_argument,	0,			'r'},
     {"help",		no_argument,		0,			'h'},
     {"verbose",		no_argument,		0,			'v'},
     {"droplet-path",	required_argument,	0,			'p'},
@@ -137,9 +139,11 @@ get_opt(int ac,
       if (cpt_opt.arch_ind_count <= MAX_ARCH)
 	cpt_opt.arch_ind[cpt_opt.arch_ind_count] = 0;
       break;
+      /*
     case 'r':
       cpt_opt.ring_mp = optarg;
       break;
+      */
     case 'h':
       return (usage());
     case 'v':
@@ -166,13 +170,15 @@ get_opt(int ac,
     return (-EINVAL);
   }
   cpt_opt.lustre_mp = av[optind];
-  if (!(ctx = dpl_ctx_new(d_path, d_name)))
+  if (!(*ctx = dpl_ctx_new(d_path, d_name)))
     return (-EINVAL);
+  /*
   if (cpt_opt.ring_mp == NULL || cpt_opt.lustre_mp == NULL) {
     if (cpt_opt.ring_mp == NULL)
       fprintf(stdout, "Must specify a root directory for the ring.\n");
-    if (cpt_opt.lustre_mp == NULL)
-      fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
+  */
+  if (cpt_opt.lustre_mp == NULL) {
+    fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
     return (-EINVAL);
   }
   return (1);
@@ -216,12 +222,13 @@ restore_data(const struct hsm_action_item *hai,
 	     const BIGNUM *BN) {
   struct hsm_extent	he;
   struct hsm_copyaction_private	*hcp = NULL;
-  char			*buff_data;
+  char			*buff_data = NULL;
+  unsigned int		lenp;
   char			src[PATH_MAX];
   char			dst[PATH_MAX];
-  struct stat		src_st;
+  //struct stat		src_st;
   struct stat		dst_st;
-  int			src_fd = -1;
+  //int			src_fd = -1;
   int			dst_fd = -1;
   char			lov_buf[XATTR_SIZE_MAX];
   size_t		lov_size = sizeof(lov_buf);
@@ -235,8 +242,10 @@ restore_data(const struct hsm_action_item *hai,
     .mask = DPL_OPTION_CONSISTENT,
   };
   __u64			offset;
+  __u64			length = hai->hai_extent.length;
+  int			hp_flags = 0; // Needed for retry
 
-  ct_path_archive(src, sizeof(src), cpt_opt.ring_mp, &hai->hai_fid);
+  ct_path_archive(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_fid); //check
   if ((ret = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_ind)) < 0) {
     fprintf(stdout, "Cannot get MDT index "DFID".\n", PFID(&hai->hai_fid));
     return (ret);
@@ -265,21 +274,22 @@ restore_data(const struct hsm_action_item *hai,
     fprintf(stdout, "Cannot open '%s' for write.\n", dst);
     return (-REP_RET_VAL);
     }
-  if ((src_fd = open(src, O_RDONLY | O_NOATIME | O_NOFOLLOW)) < 0) {
+  /*if ((src_fd = open(src, O_RDONLY | O_NOATIME | O_NOFOLLOW)) < 0) {
     fprintf(stdout, "Cannot open '%s' to read.\n", src);
     return (-REP_RET_VAL);
   }
   if ((fstat(src_fd, &src_st)) < 0) {
     fprintf(stdout, "Couldn't stat '%s'\n", src);
     return (-errno);
-  }  
+  }  */
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
-  dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, src_st.st_size, NULL, NULL);
-  if (!S_ISREG(src_st.st_mode)) {
+  // Range to be implemented for large size data
+  dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, NULL, NULL);
+  /*if (!S_ISREG(src_st.st_mode)) {
     fprintf(stdout, "'%s' is not a regular file.\n", src);
     return (-EINVAL);
-  }
+  }*/
   if (!S_ISREG(dst_st.st_mode)) {
     fprintf(stdout, "'%s' is not a regular file.\n", dst);
     return (-EINVAL);
@@ -292,16 +302,16 @@ restore_data(const struct hsm_action_item *hai,
     return (-REP_RET_VAL);
   }
 
-  offset = hai->hai_extent.lenght;
-  pwrite(dst_fd, buff_data, src_st.st_size, offset);
-  if (!(src_fd < 0))
-    close(src_fd);
+  offset = hai->hai_extent.length;
+  pwrite(dst_fd, buff_data, lenp, offset);
+  /*if (!(src_fd < 0))
+    close(src_fd);*/
   if (!(dst_fd < 0))
     close(dst_fd);
   OPENSSL_free(BNHEX);
   if (buff_data)
     free(buff_data);
-  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ret))) < 0) {
     fprintf(stdout, "Couldn' notify properly the coordinator.\n");
     return (ret);
   }
@@ -336,16 +346,21 @@ archive_data(const struct hsm_action_item *hai,
   if ((fstat(src_fd, &src_st)) < 0) {
     fprintf(stdout, "Couldn't stat '%s'\n", src);
     return (-errno);
-    }
+  }
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
+  printf("BN_bn2hex done successfully\n");
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
+  printf("Mmap done successfully\n");
   dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, NULL, NULL, buff_data, src_st.st_size);
+  printf("Dpl_put_id done successfully\n");
   OPENSSL_free(BNHEX);
+  printf("Openssl_free done successfully\n");
+
   if (src_fd > 0) {
     fprintf(stdout, "fd on %s successfully closed.\n", src);
     close(src_fd);
-  }
+  }  
   fprintf(stdout, "Action completed, notifying coordinator.\n");
   // check ptr value not NULL for hcp
   ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
@@ -377,6 +392,7 @@ process_action(const struct hsm_action_item *hai,
 
   switch (hai->hai_action) {
   case HSMA_ARCHIVE:
+    fprintf(stdout, "Commencing archive action.\n");
     if ((ret = archive_data(hai, hal_flags, ctx, BN)) < 0)
       fprintf(stdout, "Archive failed.\n");
     break;
@@ -471,12 +487,14 @@ cpt_setup() {
   int		ret;
 
   arch_fd = -1;
+  /*
   if ((arch_fd = open(cpt_opt.ring_mp, O_RDONLY)) < 0) {
     ret = -errno;
     fprintf(stdout, "Can't open archive at '%s'.\n",
 	    cpt_opt.ring_mp);
     return (ret);
   }
+  */
   ret = llapi_search_fsname(cpt_opt.lustre_mp, fs_name);
   if (ret < 0) {
     fprintf(stdout, "Cannot find a Lustre FS mounted at '%s'.\n",
@@ -504,7 +522,7 @@ main(int ac,
   dpl_ctx_t	*ctx;
   
   init_opt();
-  if ((ret = get_opt(ac, av, ctx)) < 0) {
+  if ((ret = get_opt(ac, av, &ctx)) < 0) {
     return (ret);
   }
   if (cpt_opt.is_daemon) {
@@ -515,11 +533,9 @@ main(int ac,
   fprintf(stdout, "(dev msg) Values retrieved :\n"
 	  "is_daemon : %d\n"
 	  "is_verbose : %d\n"
-	  "ring_mp : %s\n"
 	  "lustre_mp : %s\n",
 	  cpt_opt.is_daemon,
 	  cpt_opt.is_verbose,
-	  cpt_opt.ring_mp,
 	  cpt_opt.lustre_mp);
 
   //debug mode.
