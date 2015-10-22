@@ -21,6 +21,8 @@
 #define REPORT_INTERVAL_DEFAULT	30
 #define ONE_MB			0x100000
 
+#define	DPL_DICT_NB		1
+
 enum ct_action {
 	CA_IMPORT = 1,
 	CA_REBIND,
@@ -100,7 +102,74 @@ void		init_opt(void) {
 ** tmp syntax
 */
 
+static int ct_load_stripe(const char *src, void *lovea, size_t *lovea_size)
+{
+	char	 lov_file[PATH_MAX];
+	int	 rc;
+	int	 fd;
 
+	snprintf(lov_file, sizeof(lov_file), "%s.lov", src);
+	fprintf(stdout, "reading stripe rules from '%s' for '%s'", lov_file, src);
+
+	fd = open(lov_file, O_RDONLY);
+	if (fd < 0) {
+	  return -ENODATA;
+	}
+
+	rc = read(fd, lovea, *lovea_size);
+	if (rc < 0) {
+	  close(fd);
+	  return -ENODATA;
+	}
+
+	*lovea_size = rc;
+	close(fd);
+
+	return 0;
+}
+
+static int
+ct_path_lustre(char *buf,
+	       int size,
+	       const char *mnt,
+	       const lustre_fid *fid) {
+  return (snprintf(buf, size, "%s/%s/fid/"DFID_NOBRACE, mnt,
+		   dot_lustre_name, PFID(fid)));
+}
+
+static int
+ct_begin_restore(struct hsm_copyaction_private **phcp,
+		 const struct hsm_action_item *hai,
+		 int mdt_index,
+		 int open_flags) {
+  int	 ret;
+  char	 src[PATH_MAX];
+  
+  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags,
+			       false);
+  if (ret < 0) {
+    ct_path_lustre(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_fid);
+    fprintf(stdout, "llapi_hsm_action_begin() on '%s' failed\n", src);
+  }
+  
+  return (ret);
+}
+
+static int
+ct_path_archive(char *buf,
+		int sz,
+		const char *archive_dir,
+		const lustre_fid *fid) {
+  return snprintf(buf, sz, "%s/%04x/%04x/%04x/%04x/%04x/%04x/"
+		  DFID_NOBRACE, archive_dir,
+		  (fid)->f_oid       & 0xFFFF,
+		  (fid)->f_oid >> 16 & 0xFFFF,
+		  (unsigned int)((fid)->f_seq       & 0xFFFF),
+		  (unsigned int)((fid)->f_seq >> 16 & 0xFFFF),
+		  (unsigned int)((fid)->f_seq >> 32 & 0xFFFF),
+		  (unsigned int)((fid)->f_seq >> 48 & 0xFFFF),
+		  PFID(fid));
+}
 
 /*
 ** Opt_get
@@ -215,6 +284,20 @@ sighand(int sig) {
 ** get / put data
 */
 
+/*
+static int
+remove_data(const struct hsm_action_item *hai,
+	    const long hal_flags) {
+  struct hsm_copyaction_private	*hcp = NULL;
+  char				dat[PATH_MAX];
+  int				ret;
+
+  if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
+    return (-REP_RET_VAL);
+  return (1);
+}
+*/
+
 static int
 restore_data(const struct hsm_action_item *hai,
 	     const long hal_flags,
@@ -226,9 +309,7 @@ restore_data(const struct hsm_action_item *hai,
   unsigned int		lenp;
   char			src[PATH_MAX];
   char			dst[PATH_MAX];
-  //struct stat		src_st;
   struct stat		dst_st;
-  //int			src_fd = -1;
   int			dst_fd = -1;
   char			lov_buf[XATTR_SIZE_MAX];
   size_t		lov_size = sizeof(lov_buf);
@@ -274,22 +355,10 @@ restore_data(const struct hsm_action_item *hai,
     fprintf(stdout, "Cannot open '%s' for write.\n", dst);
     return (-REP_RET_VAL);
     }
-  /*if ((src_fd = open(src, O_RDONLY | O_NOATIME | O_NOFOLLOW)) < 0) {
-    fprintf(stdout, "Cannot open '%s' to read.\n", src);
-    return (-REP_RET_VAL);
-  }
-  if ((fstat(src_fd, &src_st)) < 0) {
-    fprintf(stdout, "Couldn't stat '%s'\n", src);
-    return (-errno);
-  }  */
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
   // Range to be implemented for large size data
   dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, NULL, NULL);
-  /*if (!S_ISREG(src_st.st_mode)) {
-    fprintf(stdout, "'%s' is not a regular file.\n", src);
-    return (-EINVAL);
-  }*/
   if (!S_ISREG(dst_st.st_mode)) {
     fprintf(stdout, "'%s' is not a regular file.\n", dst);
     return (-EINVAL);
@@ -304,8 +373,6 @@ restore_data(const struct hsm_action_item *hai,
 
   offset = hai->hai_extent.length;
   pwrite(dst_fd, buff_data, lenp, offset);
-  /*if (!(src_fd < 0))
-    close(src_fd);*/
   if (!(dst_fd < 0))
     close(dst_fd);
   OPENSSL_free(BNHEX);
@@ -316,6 +383,52 @@ restore_data(const struct hsm_action_item *hai,
     return (ret);
   }
   return (ret);
+}
+
+dpl_dict_t *
+archive_stripe(int src_fd,
+	       const char *src) {
+  char			lov_file[PATH_MAX];
+  char			lov_buff[XATTR_SIZE_MAX];
+  struct lov_user_md	*lum;
+  ssize_t		xattr_size;
+  dpl_dict_t		*dict_var;
+  dpl_value_t		value_var;
+
+  dict_var = dpl_dict_new(DPL_DICT_NB);
+  fprintf(stdout, "Saving stripe.\n");
+  if ((xattr_size = fgetxattr(src_fd, XATTR_LUSTRE_LOV, lov_buff,
+			      sizeof(lov_buff))) < 0) {
+    fprintf(stdout, "Cannot get stripe info on '%s'\n", src);
+    return (NULL);
+  }
+  lum = (struct love_user_md *)lov_buff;// --> not necessary?
+
+  if (lum->lmm_magic == LOV_USER_MAGIC_V1 ||
+      lum->lmm_magic == LOV_USER_MAGIC_V3) {
+    lum->lmm_stripe_offset = -1;
+  }
+
+  value_var.string->buf = lum;
+  value_var.string->len = xattr_size;
+  value_var.string->allocated = 0;
+  value_var.type = DPL_VALUE_STRING;
+
+  //buf / len / allocated
+
+  dpl_dict_add_value(dict_var, XATTR_LUSTRE_LOV, &value_var, 0);
+  return (dict_var);
+}
+
+char *
+restore_stripe (dpl_dict_t *dict_var) {
+  char			*buff;
+  struct lov_user_md	*lum;
+  int			ret;
+
+  buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
+  lum = (struct lov_user_md *)buff;
+  return (buff);
 }
 
 static int
@@ -336,6 +449,8 @@ archive_data(const struct hsm_action_item *hai,
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
   };
+  dpl_status_t			dpl_ret;
+  dpl_dict_t			*dict_var;
 
   if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
     return (-REP_RET_VAL);
@@ -352,8 +467,18 @@ archive_data(const struct hsm_action_item *hai,
   printf("BN_bn2hex done successfully\n");
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
   printf("Mmap done successfully\n");
-  dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, NULL, NULL, buff_data, src_st.st_size);
-  printf("Dpl_put_id done successfully\n");
+
+  if (!(dict_var = archive_stripe(src_fd, src)))
+    return (-REP_RET_VAL);
+
+  if ((dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, dict_var, NULL, buff_data, src_st.st_size)) != DPL_SUCCESS) {
+    printf("Pas success sur le DPL_PUT_ID = %s.\n", dpl_status_str(dpl_ret));
+    OPENSSL_free(BNHEX);
+    return (-REP_RET_VAL);
+  } else {
+    printf("Dpl_put_id done successfully\n");
+  }
+
   OPENSSL_free(BNHEX);
   printf("Openssl_free done successfully\n");
 
@@ -362,12 +487,15 @@ archive_data(const struct hsm_action_item *hai,
     close(src_fd);
   }  
   fprintf(stdout, "Action completed, notifying coordinator.\n");
+
   // check ptr value not NULL for hcp
+
   ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
   if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
     fprintf(stdout, "Couldn' notify properly the coordinator.\n");
     return (ret);
   }
+
   return (ret);
 }
 
@@ -397,6 +525,9 @@ process_action(const struct hsm_action_item *hai,
       fprintf(stdout, "Archive failed.\n");
     break;
   case HSMA_RESTORE:
+    fprintf(stdout, "Commencing restore action.\n");
+    if ((ret = restore_data(hai, hal_flags, ctx, BN)) < 0)
+      fprintf(stdout, "Restore failed.\n");
     break;
   case HSMA_REMOVE:
     break;
@@ -473,6 +604,7 @@ cpt_run(dpl_ctx_t *ctx) {
 	return (-ENOMEM);
       tmp = BN_bn2hex(BN);
       fprintf(stdout, "BIGNUM = %s\n", tmp);
+      fprintf(stdout, "Current action : %i\n", hai->hai_action);
       OPENSSL_free(tmp);
       process_action(hai, hal->hal_flags, ctx, BN);
       hai = hai_next(hai);
