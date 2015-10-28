@@ -103,6 +103,7 @@ void		init_opt(void) {
 */
 
 
+
 /*
 ** Opt_get
 */
@@ -216,107 +217,6 @@ sighand(int sig) {
 ** get / put data
 */
 
-/*
-static int
-remove_data(const struct hsm_action_item *hai,
-	    const long hal_flags) {
-  struct hsm_copyaction_private	*hcp = NULL;
-  char				dat[PATH_MAX];
-  int				ret;
-
-  if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
-    return (-REP_RET_VAL);
-  return (1);
-}
-*/
-
-static int
-restore_data(const struct hsm_action_item *hai,
-	     const long hal_flags,
-	     dpl_ctx_t *ctx,
-	     const BIGNUM *BN) {
-  struct hsm_extent	he;
-  struct hsm_copyaction_private	*hcp = NULL;
-  char			*buff_data = NULL;
-  unsigned int		lenp;
-  char			src[PATH_MAX];
-  char			dst[PATH_MAX];
-  struct stat		dst_st;
-  int			dst_fd = -1;
-  char			lov_buf[XATTR_SIZE_MAX];
-  size_t		lov_size = sizeof(lov_buf);
-  char			*BNHEX;
-  int			mdt_ind = -1;
-  int			open_flags = 0;
-  int			ret;
-  bool			set_lovea;
-  struct lu_fid		dfid;
-  dpl_option_t		dpl_opts = {
-    .mask = DPL_OPTION_CONSISTENT,
-  };
-  __u64			offset;
-  __u64			length = hai->hai_extent.length;
-  int			hp_flags = 0; // Needed for retry
-
-  ct_path_archive(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_fid); //check
-  if ((ret = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_ind)) < 0) {
-    fprintf(stdout, "Cannot get MDT index "DFID".\n", PFID(&hai->hai_fid));
-    return (ret);
-  }
-  if ((ret = ct_load_stripe(src, lov_buf, &lov_size)) < 0) {
-    fprintf(stdout, "Cannot get stripe rules for '%s', use default.\n", src);
-    set_lovea = false;
-  } else {
-    open_flags |= O_LOV_DELAY_CREATE;
-    set_lovea = true;
-  }
-  //
-  if ((ret = ct_begin_restore(&hcp, hai, mdt_ind, open_flags)) < 0)
-    return (-REP_RET_VAL);
-  //
-  if ((ret = llapi_hsm_action_get_dfid(hcp, &dfid)) < 0) {
-    fprintf(stdout, "Restoring "DFID", cannot get FID of created volatile file.\n",
-	    PFID(&hai->hai_fid));
-    return (-REP_RET_VAL);
-  }
-  //
-  snprintf(dst, sizeof(dst), "{VOLATILE}="DFID, PFID(&dfid));
-  fprintf(stdout, "Restoring data from the ring from '%s' to '%s'.\n", src,dst);
-  //
-  if ((dst_fd = llapi_hsm_action_get_fd(hcp)) < 0) {
-    fprintf(stdout, "Cannot open '%s' for write.\n", dst);
-    return (-REP_RET_VAL);
-    }
-  if (!(BNHEX = BN_bn2hex(BN)))
-    return (-ENOMEM);
-  // Range to be implemented for large size data
-  dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, NULL, NULL);
-  if (!S_ISREG(dst_st.st_mode)) {
-    fprintf(stdout, "'%s' is not a regular file.\n", dst);
-    return (-EINVAL);
-  }
-  // check needed
-  he.offset = offset;
-  he.length = 0;
-  if ((ret = llapi_hsm_action_progress(hcp, &he, length, 0)) < 0) {
-    fprintf(stdout, "Progress ioctl for copy '%s'->'%s' failed.\n", src, dst);
-    return (-REP_RET_VAL);
-  }
-
-  offset = hai->hai_extent.length;
-  pwrite(dst_fd, buff_data, lenp, offset);
-  if (!(dst_fd < 0))
-    close(dst_fd);
-  OPENSSL_free(BNHEX);
-  if (buff_data)
-    free(buff_data);
-  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ret))) < 0) {
-    fprintf(stdout, "Couldn' notify properly the coordinator.\n");
-    return (ret);
-  }
-  return (ret);
-}
-
 dpl_dict_t *
 archive_stripe(int src_fd,
 	       const char *src) {
@@ -334,7 +234,7 @@ archive_stripe(int src_fd,
     fprintf(stdout, "Cannot get stripe info on '%s'\n", src);
     return (NULL);
   }
-  lum = (struct love_user_md *)lov_buff;// --> not necessary?
+  lum = (struct love_user_md *)lov_buff;
 
   if (lum->lmm_magic == LOV_USER_MAGIC_V1 ||
       lum->lmm_magic == LOV_USER_MAGIC_V3) {
@@ -346,13 +246,11 @@ archive_stripe(int src_fd,
   value_var.string->allocated = 0;
   value_var.type = DPL_VALUE_STRING;
 
-  //buf / len / allocated
-
   dpl_dict_add_value(dict_var, XATTR_LUSTRE_LOV, &value_var, 0);
   return (dict_var);
 }
 
-char *
+struct love_user_md *
 restore_stripe (dpl_dict_t *dict_var) {
   char			*buff;
   struct lov_user_md	*lum;
@@ -360,7 +258,80 @@ restore_stripe (dpl_dict_t *dict_var) {
 
   buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
   lum = (struct lov_user_md *)buff;
-  return (buff);
+  //FIXME memdup
+  return (lum);
+}
+
+
+static int
+remove_data(const struct hsm_action_item *hai,
+	    const long hal_flags,
+	    dpl_ctx_t *ctx,
+	    const BIGNUM *BN) {
+  char				*BNHEX;
+  struct hsm_copyaction_private	*hcp = NULL;
+  dpl_option_t			dpl_opts = {
+    .mask = DPL_OPTION_CONSISTENT,
+  };
+  dpl_status_t			dpl_ret;
+  int				ret;
+
+  if (!(BNHEX = BN_bn2hex(BN)))
+    return (-ENOMEM);
+  if ((dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL)) != DPL_SUCCESS) {
+      printf("Pas success sur le DPL_DELETE_ID = %s.\n", dpl_status_str(dpl_ret));
+      OPENSSL_free(BNHEX);
+      return (-REP_RET_VAL);
+    } else {
+      printf("Dpl_delete_id done successfully\n");
+    }
+    return (1);
+    if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, abs(0))) < 0) {
+      fprintf(stdout, "Couldn' notify properly the coordinator.\n");
+      return (ret);
+    }
+}
+
+static int
+restore_data(const struct hsm_action_item *hai,
+	     const long hal_flags,
+	     dpl_ctx_t *ctx,
+	     const BIGNUM *BN) {
+  char				*buff_data;
+  char				*BNHEX;
+  __u64				offset;
+  int				lustre_fd;
+  dpl_option_t			dpl_opts = {
+    .mask = DPL_OPTION_CONSISTENT,
+  };
+  struct love_user_md		*lum;
+  dpl_dict_t			*dict_var;
+  dpl_status_t			dpl_ret;
+
+  if (!(BNHEX = BN_bn2hex(BN)))
+    return (-ENOMEM);
+  //FIXME Range to be implemented for large size data
+  if ((dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL))
+      != DPL_SUCCESS)
+  lum = restore_stripe(dict_var);
+    printf("Pas success sur le DPL_GET_ID = %s.\n", dpl_status_str(dpl_ret));
+    OPENSSL_free(BNHEX);
+    return (-REP_RET_VAL);
+  } else {
+    printf("Dpl_get_id done successfully\n");
+  }
+  offset = hai->hai_extent.length;
+  if ((pwrite(lustre_fd, buff_data, lenp, offset)) < 0)
+    return (-REP_RET_VAL);
+  OPENSSL_free(BNHEX);
+
+  if (buff_data)
+    free(buff_data);
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ret))) < 0) {
+    fprintf(stdout, "Couldn' notify properly the coordinator.\n");
+    return (ret);
+  }
+  return (ret);
 }
 
 static int
@@ -403,7 +374,8 @@ archive_data(const struct hsm_action_item *hai,
   if (!(dict_var = archive_stripe(src_fd, src)))
     return (-REP_RET_VAL);
 
-  if ((dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, dict_var, NULL, buff_data, src_st.st_size)) != DPL_SUCCESS) {
+  if ((dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, dict_var, NULL, buff_data, src_st.st_size))
+      != DPL_SUCCESS) {
     printf("Pas success sur le DPL_PUT_ID = %s.\n", dpl_status_str(dpl_ret));
     OPENSSL_free(BNHEX);
     return (-REP_RET_VAL);
@@ -420,7 +392,7 @@ archive_data(const struct hsm_action_item *hai,
   }  
   fprintf(stdout, "Action completed, notifying coordinator.\n");
 
-  // check ptr value not NULL for hcp
+  //FIXME check ptr value not NULL for hcp
 
   ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
   if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
@@ -462,6 +434,9 @@ process_action(const struct hsm_action_item *hai,
       fprintf(stdout, "Restore failed.\n");
     break;
   case HSMA_REMOVE:
+    fprintf(stdout, "Commencing remove action.\n");
+    if ((ret = remove_data(hai, hal_flags, ctx, BN)) < 0)
+      fprintf(stdout, "Remove failed.\n");
     break;
   case HSMA_CANCEL:
     return (-REP_RET_VAL);
@@ -527,7 +502,7 @@ cpt_run(dpl_ctx_t *ctx) {
     }
     fprintf(stdout, "Copytool fs=%s, archive#=%d, item_count=%d.\n",
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
-    // check fs_name with strcmp.
+    //FIXME (?) check fs_name with strcmp.
     hai = hai_first(hal);
     for (i = 0; i < hal->hal_count; ++i) {
       char			*tmp;
