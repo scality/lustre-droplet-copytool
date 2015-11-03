@@ -103,7 +103,6 @@ void		init_opt(void) {
 */
 
 
-
 /*
 ** Opt_get
 */
@@ -234,14 +233,14 @@ archive_stripe(int src_fd,
     fprintf(stdout, "Cannot get stripe info on '%s'\n", src);
     return (NULL);
   }
-  lum = (struct love_user_md *)lov_buff;
+  lum = (void *)lov_buff;
 
   if (lum->lmm_magic == LOV_USER_MAGIC_V1 ||
       lum->lmm_magic == LOV_USER_MAGIC_V3) {
     lum->lmm_stripe_offset = -1;
   }
 
-  value_var.string->buf = lum;
+  value_var.string->buf = (void *)lum;
   value_var.string->len = xattr_size;
   value_var.string->allocated = 0;
   value_var.type = DPL_VALUE_STRING;
@@ -250,14 +249,14 @@ archive_stripe(int src_fd,
   return (dict_var);
 }
 
-struct love_user_md *
+struct lov_user_md *
 restore_stripe (dpl_dict_t *dict_var) {
   char			*buff;
   struct lov_user_md	*lum;
   int			ret;
 
   buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
-  lum = (struct lov_user_md *)buff;
+  lum = (void *)buff;
   //FIXME memdup
   return (lum);
 }
@@ -301,19 +300,22 @@ restore_data(const struct hsm_action_item *hai,
   char				*BNHEX;
   __u64				offset;
   int				lustre_fd;
+  struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
   };
-  struct love_user_md		*lum;
+  unsigned int			lenp;
+  struct lov_user_md		*lum;
   dpl_dict_t			*dict_var;
   dpl_status_t			dpl_ret;
+  int				ret;
 
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
   //FIXME Range to be implemented for large size data
   if ((dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL))
-      != DPL_SUCCESS)
-  lum = restore_stripe(dict_var);
+      != DPL_SUCCESS) {
+    lum = restore_stripe(dict_var);
     printf("Pas success sur le DPL_GET_ID = %s.\n", dpl_status_str(dpl_ret));
     OPENSSL_free(BNHEX);
     return (-REP_RET_VAL);
@@ -327,7 +329,7 @@ restore_data(const struct hsm_action_item *hai,
 
   if (buff_data)
     free(buff_data);
-  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ret))) < 0) {
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, abs(0))) < 0) {
     fprintf(stdout, "Couldn' notify properly the coordinator.\n");
     return (ret);
   }
