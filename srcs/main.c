@@ -1,4 +1,6 @@
 #include <sys/mman.h>
+#include <sys/types.h>
+#include <sys/xattr.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -7,6 +9,7 @@
 #include <ctype.h>
 #include <getopt.h>
 #include <signal.h>
+#include <pthread.h>
 #include "cpt_opt.h"
 #include "cpt_msgs.h"
 #include <lustre/lustreapi.h>
@@ -79,7 +82,6 @@ struct		s_opt
   int		is_verbose;
   int		arch_ind[MAX_ARCH];
   unsigned int	arch_ind_count;
-  //char		*ring_mp;
   char		*lustre_mp;
   int		lustre_mp_fd;
 }		cpt_opt;
@@ -92,7 +94,6 @@ void		init_opt(void) {
   cpt_opt.is_daemon = 0;
   cpt_opt.is_verbose = 0;
   cpt_opt.arch_ind_count = 0;
-  //cpt_opt.ring_mp = NULL;
   cpt_opt.lustre_mp = NULL;
   cpt_opt.lustre_mp_fd = -1;
   cpt_data = NULL;
@@ -102,6 +103,71 @@ void		init_opt(void) {
 ** tmp syntax
 */
 
+static int ct_load_stripe(const char *src, void *lovea, size_t *lovea_size)
+{
+	char	 lov_file[PATH_MAX];
+	int	 rc;
+	int	 fd;
+
+	snprintf(lov_file, sizeof(lov_file), "%s.lov", src);
+	CT_TRACE("reading stripe rules from '%s' for '%s'", lov_file, src);
+
+	fd = open(lov_file, O_RDONLY);
+	if (fd < 0) {
+		CT_ERROR(errno, "cannot open '%s'", lov_file);
+		return -ENODATA;
+	}
+
+	rc = read(fd, lovea, *lovea_size);
+	if (rc < 0) {
+		CT_ERROR(errno, "cannot read %zu bytes from '%s'",
+			 *lovea_size, lov_file);
+		close(fd);
+		return -ENODATA;
+	}
+
+	*lovea_size = rc;
+	close(fd);
+
+	return 0;
+}
+
+static int
+ct_begin_restore(struct hsm_copyaction_private **phcp,
+		 const struct hsm_action_item *hai,
+		 int mdt_index,
+		 int open_flags) {
+  int	 ret;
+  char	 src[PATH_MAX];
+  
+  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags,
+			       false);
+  if (ret < 0) {
+    snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_fid));
+    fprintf(stdout, "llapi_hsm_action_begin() on '%s' failed\n", src);
+  }  
+  return (ret);
+}
+
+/*
+** Snprintf func
+*/
+
+static int
+ct_path_archive(char *buf,
+		int sz,
+		const char *archive_dir,
+		const lustre_fid *fid) {
+  return snprintf(buf, sz, "%s/%04x/%04x/%04x/%04x/%04x/%04x/"
+		  DFID_NOBRACE, archive_dir,
+		  (fid)->f_oid       & 0xFFFF,
+		  (fid)->f_oid >> 16 & 0xFFFF,
+		  (unsigned int)((fid)->f_seq       & 0xFFFF),
+		  (unsigned int)((fid)->f_seq >> 16 & 0xFFFF),
+		  (unsigned int)((fid)->f_seq >> 32 & 0xFFFF),
+		  (unsigned int)((fid)->f_seq >> 48 & 0xFFFF),
+		  PFID(fid));
+}
 
 /*
 ** Opt_get
@@ -115,7 +181,6 @@ get_opt(int ac,
   struct option	long_opts[] = {
     {"archive",		required_argument,	NULL,			'A'},
     {"daemon",		no_argument,		&cpt_opt.is_daemon,	1},
-    //{"ring",		required_argument,	0,			'r'},
     {"help",		no_argument,		0,			'h'},
     {"verbose",		no_argument,		0,			'v'},
     {"droplet-path",	required_argument,	0,			'p'},
@@ -140,11 +205,6 @@ get_opt(int ac,
       if (cpt_opt.arch_ind_count <= MAX_ARCH)
 	cpt_opt.arch_ind[cpt_opt.arch_ind_count] = 0;
       break;
-      /*
-    case 'r':
-      cpt_opt.ring_mp = optarg;
-      break;
-      */
     case 'h':
       return (usage());
     case 'v':
@@ -173,11 +233,6 @@ get_opt(int ac,
   cpt_opt.lustre_mp = av[optind];
   if (!(*ctx = dpl_ctx_new(d_path, d_name)))
     return (-EINVAL);
-  /*
-  if (cpt_opt.ring_mp == NULL || cpt_opt.lustre_mp == NULL) {
-    if (cpt_opt.ring_mp == NULL)
-      fprintf(stdout, "Must specify a root directory for the ring.\n");
-  */
   if (cpt_opt.lustre_mp == NULL) {
     fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
     return (-EINVAL);
@@ -298,8 +353,14 @@ restore_data(const struct hsm_action_item *hai,
 	     const BIGNUM *BN) {
   char				*buff_data;
   char				*BNHEX;
+  char				lpath[PATH_MAX];
   __u64				offset;
-  int				lustre_fd;
+  int				lustre_fd = -1;
+  int				mdt_index = -1;
+  int				open_flags = 0;
+  bool				set_lovea;
+  char				lov_buff[XATTR_SIZE_MAX];
+  size_t			lov_size = sizeof(lov_buff);
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
@@ -309,6 +370,33 @@ restore_data(const struct hsm_action_item *hai,
   dpl_dict_t			*dict_var;
   dpl_status_t			dpl_ret;
   int				ret;
+
+  // check for NULL
+
+  //ct_path_archive(lpath, sizeof(lpath), NULL, &hai->hai_fid);
+  if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0) {
+    ret = lustre_fd;
+    fprintf(stdout, "Cannot open Lustre fd.\n");
+    //FIXME goto
+    return (ret);
+  }
+
+  if ((ret = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0) {
+    fprintf(stdout, "Cannot get mdt index.\n");
+    return (ret);
+  }
+
+  // xattr set
+  if ((ret = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, lov_buff, lov_size, XATTR_CREATE)) < 0) {
+    ret = -errno;
+    fprintf(stdout, "Cannot set lov EA on '%s'.\n", lustre_fd);
+    set_lovea = false;
+  } else {
+    open_flags |= O_LOV_DELAY_CREATE;
+    set_lovea = true;
+  }
+
+  // interpret lov file once recovered
 
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
@@ -359,7 +447,7 @@ archive_data(const struct hsm_action_item *hai,
 
   if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
     return (-REP_RET_VAL);
-  ct_path_lustre(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_dfid);
+  snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_dfid));
   fprintf(stdout, "DEBUG SRC: %s\n", src);
   src_fd = llapi_hsm_action_get_fd(hcp);
   fprintf(stdout, "DEBUG SRC FD : %d\n", src_fd);
@@ -396,7 +484,7 @@ archive_data(const struct hsm_action_item *hai,
 
   //FIXME check ptr value not NULL for hcp
 
-  ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
+  snprintf(lstr, sizeof(lstr), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_fid));
   if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
     fprintf(stdout, "Couldn' notify properly the coordinator.\n");
     return (ret);
@@ -476,6 +564,63 @@ uks_key_from_fid(int64_t f_seq, int32_t f_oid, int32_t f_ver) {
 ** cpt_functions.
 */
 
+struct ct_th_data {
+  long				hal_flags;
+  struct hsm_action_item	*hai;
+  dpl_ctx_t			*ctx;
+  const BIGNUM			*BN;
+};
+
+static void *
+cpt_thread(void *data) {
+  struct ct_th_data	*cttd = data;
+  int			ret;
+
+  ret = process_action(cttd->hai, cttd->hal_flags, cttd->ctx, cttd->BN);
+
+  free(cttd->hai);
+  free(cttd);
+  pthread_exit((void *)(intptr_t)ret);
+}
+
+static int
+process_async(const struct hsm_action_item *hai,
+		  long hal_flags,
+		  dpl_ctx_t *ctx,
+		  const BIGNUM *BN) {
+  pthread_attr_t	attr;
+  pthread_t		thread;
+  struct ct_th_data	*data;
+  int			ret;
+
+
+  if (!(data = malloc(sizeof(*data))))
+    return (-ENOMEM);
+
+  if (!(data->hai = malloc(hai->hai_len))) {
+    free(data);
+    return (-ENOMEM);
+  }
+
+  memcpy(data->hai, hai, hai->hai_len);
+  data->hal_flags = hal_flags;
+  data->ctx = ctx;
+  data->BN = BN;
+
+  if ((ret = pthread_attr_init(&attr)) != 0) {
+    fprintf(stdout, "pthread_attr_init failed for '%s' service.\n", cpt_opt.lustre_mp);
+    free(data->hai);
+    free(data);
+    return (-ret);
+  }
+
+  pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+  if ((ret = pthread_create(&thread, &attr, cpt_thread, data)) != 0)
+    fprintf(stdout, "Cannot create thread for '%s' service.\n", cpt_opt.lustre_mp);
+  pthread_attr_destroy(&attr);
+  return (0);
+}
+
 static int
 cpt_run(dpl_ctx_t *ctx) {
   int		ret;
@@ -515,7 +660,9 @@ cpt_run(dpl_ctx_t *ctx) {
       fprintf(stdout, "BIGNUM = %s\n", tmp);
       fprintf(stdout, "Current action : %i\n", hai->hai_action);
       OPENSSL_free(tmp);
-      process_action(hai, hal->hal_flags, ctx, BN);
+
+      process_async(hai, hal->hal_flags, ctx, BN);
+
       hai = hai_next(hai);
     }
   }
