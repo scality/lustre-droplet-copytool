@@ -1,15 +1,23 @@
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE
+#endif
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/xattr.h>
+#include <sys/syscall.h>
+#include <sys/time.h>
 #include <fcntl.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <stdarg.h>
+#include <dirent.h>
 #include <errno.h>
 #include <unistd.h>
 #include <ctype.h>
 #include <getopt.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>
 #include "cpt_opt.h"
 #include "cpt_msgs.h"
 #include <lustre/lustreapi.h>
@@ -18,13 +26,22 @@
 #include <droplet.h>
 
 /*
-** To change defines
+** Defines
 */
 
 #define REPORT_INTERVAL_DEFAULT	30
 #define ONE_MB			0x100000
+#define	KEY_SIZE	        159
+#define	PATH_MAX	        4096
 
+#define	REP_RET_VAL	        1
 #define	DPL_DICT_NB		1
+
+static inline double		ct_now(void) {
+  struct timeval		tv;
+  gettimeofday(&tv, NULL);
+  return(tv.tv_sec + 0.000001 * tv.tv_usec);
+}
 
 enum ct_action {
 	CA_IMPORT = 1,
@@ -63,18 +80,10 @@ struct options opt = {
 	.o_chunk_size = ONE_MB,
 };
 
-/*
-** defines and g_var
-*/
-
-#define	KEY_SIZE	159
-#define	PATH_MAX	4096
-
-#define	REP_RET_VAL	1
-
 static struct hsm_copytool_private	*cpt_data;
 static char				fs_name[MAX_OBD_NAME + 1];
 static int				arch_fd;
+static char				cmd_name[PATH_MAX];
 
 struct		s_opt
 {
@@ -85,6 +94,26 @@ struct		s_opt
   char		*lustre_mp;
   int		lustre_mp_fd;
 }		cpt_opt;
+
+#define CT_ERROR(_rc, _format, ...)					\
+	llapi_error(LLAPI_MSG_ERROR, _rc,				\
+		    "%f %s[%ld]: "_format,				\
+		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+
+#define CT_DEBUG(_format, ...)						\
+	llapi_error(LLAPI_MSG_DEBUG | LLAPI_MSG_NO_ERRNO, 0,		\
+		    "%f %s[%ld]: "_format,				\
+		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+
+#define CT_WARN(_format, ...) \
+	llapi_error(LLAPI_MSG_WARN | LLAPI_MSG_NO_ERRNO, 0,		\
+		    "%f %s[%ld]: "_format,				\
+		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+
+#define CT_TRACE(_format, ...)						\
+	llapi_error(LLAPI_MSG_INFO | LLAPI_MSG_NO_ERRNO, 0,		\
+		    "%f %s[%ld]: "_format,				\
+		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
 /*
 ** Initializing and getting pre-running options for the daemon copytool.
@@ -132,6 +161,10 @@ static int ct_load_stripe(const char *src, void *lovea, size_t *lovea_size)
 	return 0;
 }
 
+/*
+** Snprintf func
+*/
+
 static int
 ct_begin_restore(struct hsm_copyaction_private **phcp,
 		 const struct hsm_action_item *hai,
@@ -140,25 +173,20 @@ ct_begin_restore(struct hsm_copyaction_private **phcp,
   int	 ret;
   char	 src[PATH_MAX];
   
-  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags,
-			       false);
-  if (ret < 0) {
+  if ((ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags,
+				    false)) < 0) {
     snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_fid));
-    fprintf(stdout, "llapi_hsm_action_begin() on '%s' failed\n", src);
+    CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed\n", src);
   }  
   return (ret);
 }
-
-/*
-** Snprintf func
-*/
 
 static int
 ct_path_archive(char *buf,
 		int sz,
 		const char *archive_dir,
 		const lustre_fid *fid) {
-  return snprintf(buf, sz, "%s/%04x/%04x/%04x/%04x/%04x/%04x/"
+  return (snprintf(buf, sz, "%s/%04x/%04x/%04x/%04x/%04x/%04x/"
 		  DFID_NOBRACE, archive_dir,
 		  (fid)->f_oid       & 0xFFFF,
 		  (fid)->f_oid >> 16 & 0xFFFF,
@@ -166,7 +194,7 @@ ct_path_archive(char *buf,
 		  (unsigned int)((fid)->f_seq >> 16 & 0xFFFF),
 		  (unsigned int)((fid)->f_seq >> 32 & 0xFFFF),
 		  (unsigned int)((fid)->f_seq >> 48 & 0xFFFF),
-		  PFID(fid));
+		   PFID(fid)));
 }
 
 /*
@@ -190,6 +218,7 @@ get_opt(int ac,
   int		opt_ind = 0;
   char		*d_path = NULL;
   char		*d_name = NULL;
+  int		ret;
 
   optind = 0;
   while ((trig = getopt_long(ac, av, "A:r:hvn:p:", long_opts, &opt_ind)) != -1)
@@ -197,9 +226,10 @@ get_opt(int ac,
     case 'A':
       if ((cpt_opt.arch_ind_count >= MAX_ARCH)
 	  || ((unsigned int)atoi(optarg) >= MAX_ARCH)) {
-	fprintf(stdout, "Archive number must be less"
+	ret = -E2BIG;
+	CT_ERROR(ret, "Archive number must be less"
 		"than %zu.\n", MAX_ARCH);
-	return (-E2BIG);
+	return (ret);
       }
       cpt_opt.arch_ind[cpt_opt.arch_ind_count++] = atoi(optarg);
       if (cpt_opt.arch_ind_count <= MAX_ARCH)
@@ -219,23 +249,27 @@ get_opt(int ac,
     }
   fprintf(stdout, "name = %s - path = %s\n", d_name, d_path);
   if ((!d_path) || (!d_name)) {
-    fprintf(stdout, "No specified droplet_profile path or name.\n");
-    return (-EINVAL);
+    ret = -EINVAL;
+    CT_ERROR(ret, "No specified droplet_profile path or name.\n");
+    return (ret);
   }
   if (ac < 4) {
-    fprintf(stdout, "Invalid options, try --help or -h for more informations.\n");
-    return (-EINVAL);
+    ret = -EINVAL;
+    CT_ERROR(ret, "Invalid options, try --help or -h for more informations.\n");
+    return (ret);
     }
   if (ac != optind + 1 && optind >= MIN_OPT) {
-    fprintf(stdout, "No lustre mount point specified.\n");
-    return (-EINVAL);
+    ret = -EINVAL;
+    CT_ERROR(ret, "No lustre mount point specified.\n");
+    return (ret);
   }
   cpt_opt.lustre_mp = av[optind];
   if (!(*ctx = dpl_ctx_new(d_path, d_name)))
     return (-EINVAL);
   if (cpt_opt.lustre_mp == NULL) {
-    fprintf(stdout, "Must specify a root directory for the lustre fs.\n");
-    return (-EINVAL);
+    ret = -EINVAL;
+    CT_ERROR(ret, "Must specify a root directory for the lustre fs.\n");
+    return (ret);
   }
   return (1);
 }
@@ -251,7 +285,7 @@ daemonize() {
   if (cpt_opt.is_daemon) {
     if ((ret = daemon(1, 1)) < 0)
       return (-(ret = errno));
-    fprintf(stdout, "Daemon created.\n");
+    CT_TRACE("Daemon created.\n");
   }
   return (1);
 }
@@ -280,12 +314,14 @@ archive_stripe(int src_fd,
   ssize_t		xattr_size;
   dpl_dict_t		*dict_var;
   dpl_value_t		value_var;
+  int			ret;
 
   dict_var = dpl_dict_new(DPL_DICT_NB);
   fprintf(stdout, "Saving stripe.\n");
   if ((xattr_size = fgetxattr(src_fd, XATTR_LUSTRE_LOV, lov_buff,
 			      sizeof(lov_buff))) < 0) {
-    fprintf(stdout, "Cannot get stripe info on '%s'\n", src);
+    ret = -EINVAL;
+    CT_ERROR(ret, "Cannot get stripe info on '%s'\n", src);
     return (NULL);
   }
   lum = (void *)lov_buff;
@@ -329,21 +365,22 @@ remove_data(const struct hsm_action_item *hai,
   };
   dpl_status_t			dpl_ret;
   int				ret;
-
+  
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
   if ((dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL)) != DPL_SUCCESS) {
-      printf("Pas success sur le DPL_DELETE_ID = %s.\n", dpl_status_str(dpl_ret));
-      OPENSSL_free(BNHEX);
-      return (-REP_RET_VAL);
-    } else {
-      printf("Dpl_delete_id done successfully\n");
-    }
-    return (1);
-    if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, abs(0))) < 0) {
-      fprintf(stdout, "Couldn' notify properly the coordinator.\n");
-      return (ret);
-    }
+    ret = -EINVAL;
+    CT_ERROR(ret, "DPL_DELETE_ID failed for operation remove data = %s.\n", dpl_status_str(dpl_ret));
+    OPENSSL_free(BNHEX);
+    return (ret);
+  } else {
+    CT_TRACE("Dpl_delete_id done successfully for operation remove data.\n");
+  }
+  return (1);
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, abs(0))) < 0) {
+    CT_ERROR(ret, "Couldn' notify properly the coordinator to end operation remove data.\n");
+    return (ret);
+  }
 }
 
 static int
@@ -373,30 +410,29 @@ restore_data(const struct hsm_action_item *hai,
 
   // check for NULL
 
-  //ct_path_archive(lpath, sizeof(lpath), NULL, &hai->hai_fid);
   if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0) {
     ret = lustre_fd;
-    fprintf(stdout, "Cannot open Lustre fd.\n");
-    //FIXME goto
+    CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.\n");
+    //FIXME goto fini;
     return (ret);
   }
 
   if ((ret = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0) {
-    fprintf(stdout, "Cannot get mdt index.\n");
+    CT_ERROR(ret, "Cannot get mdt index for operation restore data.\n");
     return (ret);
   }
 
-  // xattr set
+  //xattr set
   if ((ret = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, lov_buff, lov_size, XATTR_CREATE)) < 0) {
     ret = -errno;
-    fprintf(stdout, "Cannot set lov EA on '%s'.\n", lustre_fd);
+    CT_ERROR(ret, "Cannot set lov EA on '%s' for operation restore data.\n", lustre_fd);
     set_lovea = false;
   } else {
     open_flags |= O_LOV_DELAY_CREATE;
     set_lovea = true;
   }
 
-  // interpret lov file once recovered
+  //FIXME interpret lov file once recovered
 
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
@@ -404,11 +440,12 @@ restore_data(const struct hsm_action_item *hai,
   if ((dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL))
       != DPL_SUCCESS) {
     lum = restore_stripe(dict_var);
-    printf("Pas success sur le DPL_GET_ID = %s.\n", dpl_status_str(dpl_ret));
+    ret = -EINVAL;
+    CT_ERROR(ret, "DPL_GET_ID failed for operation restore data = %s.\n", dpl_status_str(dpl_ret));
     OPENSSL_free(BNHEX);
-    return (-REP_RET_VAL);
+    return (ret);
   } else {
-    printf("Dpl_get_id done successfully\n");
+    CT_TRACE("Dpl_get_id done successfully for oepration restore data.\n");
   }
   offset = hai->hai_extent.length;
   if ((pwrite(lustre_fd, buff_data, lenp, offset)) < 0)
@@ -418,7 +455,7 @@ restore_data(const struct hsm_action_item *hai,
   if (buff_data)
     free(buff_data);
   if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, abs(0))) < 0) {
-    fprintf(stdout, "Couldn' notify properly the coordinator.\n");
+    CT_ERROR(ret, "Couldn't notify properly the coordinator to end operation restore data.\n");
     return (ret);
   }
   return (ret);
@@ -446,47 +483,43 @@ archive_data(const struct hsm_action_item *hai,
   dpl_dict_t			*dict_var;
 
   if ((ret = ct_begin_restore(&hcp, hai, -1, 0)) < 0)
-    return (-REP_RET_VAL);
+    return (ret);
   snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_dfid));
-  fprintf(stdout, "DEBUG SRC: %s\n", src);
   src_fd = llapi_hsm_action_get_fd(hcp);
-  fprintf(stdout, "DEBUG SRC FD : %d\n", src_fd);
   if ((fstat(src_fd, &src_st)) < 0) {
-    fprintf(stdout, "Couldn't stat '%s'\n", src);
-    return (-errno);
+    ret = -errno;
+    CT_ERROR(ret, "Couldn't stat '%s' for operation archive data.\n", src);
+    return (ret);
   }
   if (!(BNHEX = BN_bn2hex(BN)))
     return (-ENOMEM);
-  printf("BN_bn2hex done successfully\n");
+  CT_TRACE("BN_bn2hex done successfully for operation archive data.\n");
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
-  printf("Mmap done successfully\n");
 
   if (!(dict_var = archive_stripe(src_fd, src)))
     return (-REP_RET_VAL);
 
   if ((dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, dict_var, NULL, buff_data, src_st.st_size))
       != DPL_SUCCESS) {
-    printf("Pas success sur le DPL_PUT_ID = %s.\n", dpl_status_str(dpl_ret));
+    ret = -errno;
+    CT_ERROR(ret, "DPL_PUT_ID failed for operation archive data = %s.\n", dpl_status_str(dpl_ret));
     OPENSSL_free(BNHEX);
     return (-REP_RET_VAL);
   } else {
-    printf("Dpl_put_id done successfully\n");
+    CT_TRACE("Dpl_put_id done successfully for operation archive data.\n");
   }
 
   OPENSSL_free(BNHEX);
-  printf("Openssl_free done successfully\n");
 
-  if (src_fd > 0) {
-    fprintf(stdout, "fd on %s successfully closed.\n", src);
+  if (src_fd > 0)
     close(src_fd);
-  }  
-  fprintf(stdout, "Action completed, notifying coordinator.\n");
+  CT_TRACE("Action completed, notifying coordinator.\n");
 
   //FIXME check ptr value not NULL for hcp
 
   snprintf(lstr, sizeof(lstr), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_fid));
   if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, hp_flags, abs(ct_rc))) < 0) {
-    fprintf(stdout, "Couldn' notify properly the coordinator.\n");
+    CT_TRACE("Couldn' notify properly the coordinator to end operation archive data.\n");
     return (ret);
   }
 
@@ -508,31 +541,31 @@ process_action(const struct hsm_action_item *hai,
   ret = llapi_fid2path(cpt_opt.lustre_mp, fid, path,
 		       sizeof(path), &recno, &linkno);
   if (ret < 0)
-    fprintf(stdout, "Cannot get path of FID %s\n", fid);
+    CT_ERROR(ret, "Cannot get path of FID '%s' to process action.\n", fid);
   else
-    fprintf(stdout, "Processing file '%s'\n", path);
+    CT_TRACE("Processing file '%s'.\n", path);
 
   switch (hai->hai_action) {
   case HSMA_ARCHIVE:
-    fprintf(stdout, "Commencing archive action.\n");
+    CT_TRACE("Commencing archive action.\n");
     if ((ret = archive_data(hai, hal_flags, ctx, BN)) < 0)
-      fprintf(stdout, "Archive failed.\n");
+      CT_ERROR(ret, "Archive operation failed.\n");
     break;
   case HSMA_RESTORE:
-    fprintf(stdout, "Commencing restore action.\n");
+    CT_TRACE("Commencing restore action.\n");
     if ((ret = restore_data(hai, hal_flags, ctx, BN)) < 0)
-      fprintf(stdout, "Restore failed.\n");
+      CT_ERROR(ret, "Restore operation failed.\n");
     break;
   case HSMA_REMOVE:
-    fprintf(stdout, "Commencing remove action.\n");
+    CT_TRACE("Commencing remove action.\n");
     if ((ret = remove_data(hai, hal_flags, ctx, BN)) < 0)
-      fprintf(stdout, "Remove failed.\n");
+      CT_ERROR(ret, "Remove operation failed.\n");
     break;
   case HSMA_CANCEL:
     return (-REP_RET_VAL);
   default:
     ret = -EINVAL;
-    fprintf(stdout, "Unknown action %d, on %s\n",
+    CT_ERROR(ret, "Unknown action %d, on %s.\n",
 	    hai->hai_action, cpt_opt.lustre_mp);
   }
   return (0);
@@ -608,7 +641,7 @@ process_async(const struct hsm_action_item *hai,
   data->BN = BN;
 
   if ((ret = pthread_attr_init(&attr)) != 0) {
-    fprintf(stdout, "pthread_attr_init failed for '%s' service.\n", cpt_opt.lustre_mp);
+    CT_ERROR(ret, "pthread_attr_init failed for '%s' service.\n", cpt_opt.lustre_mp);
     free(data->hai);
     free(data);
     return (-ret);
@@ -616,7 +649,7 @@ process_async(const struct hsm_action_item *hai,
 
   pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
   if ((ret = pthread_create(&thread, &attr, cpt_thread, data)) != 0)
-    fprintf(stdout, "Cannot create thread for '%s' service.\n", cpt_opt.lustre_mp);
+    CT_ERROR(ret, "Cannot create thread for '%s' service.\n", cpt_opt.lustre_mp);
   pthread_attr_destroy(&attr);
   return (0);
 }
@@ -629,7 +662,7 @@ cpt_run(dpl_ctx_t *ctx) {
 				    cpt_opt.arch_ind_count,
 				    cpt_opt.arch_ind, 0);
   if (ret < 0) {
-    fprintf(stdout, "Cannot start copytool interface.\n");
+    CT_ERROR(ret, "Cannot start copytool interface.\n");
     return (ret);
   }
   signal(SIGINT, sighand);
@@ -644,10 +677,10 @@ cpt_run(dpl_ctx_t *ctx) {
 
     ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
     if (ret == -ESHUTDOWN) {
-      fprintf(stdout, "Shutting down.\n");
+      CT_TRACE("Shutting down.\n");
       break;
     }
-    fprintf(stdout, "Copytool fs=%s, archive#=%d, item_count=%d.\n",
+    CT_TRACE("Copytool fs=%s, archive#=%d, item_count=%d.\n",
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
     //FIXME (?) check fs_name with strcmp.
     hai = hai_first(hal);
@@ -657,8 +690,10 @@ cpt_run(dpl_ctx_t *ctx) {
       if (!(BN = uks_key_from_fid(hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver)))
 	return (-ENOMEM);
       tmp = BN_bn2hex(BN);
-      fprintf(stdout, "BIGNUM = %s\n", tmp);
-      fprintf(stdout, "Current action : %i\n", hai->hai_action);
+      //
+      printf("BIGNUM = %s\n", tmp);
+      printf("Current action : %i\n", hai->hai_action);
+      //
       OPENSSL_free(tmp);
 
       process_async(hai, hal->hal_flags, ctx, BN);
@@ -675,27 +710,18 @@ cpt_setup() {
   int		ret;
 
   arch_fd = -1;
-  /*
-  if ((arch_fd = open(cpt_opt.ring_mp, O_RDONLY)) < 0) {
-    ret = -errno;
-    fprintf(stdout, "Can't open archive at '%s'.\n",
-	    cpt_opt.ring_mp);
-    return (ret);
-  }
-  */
   ret = llapi_search_fsname(cpt_opt.lustre_mp, fs_name);
   if (ret < 0) {
-    fprintf(stdout, "Cannot find a Lustre FS mounted at '%s'.\n",
+    CT_ERROR(ret, "Cannot find a Lustre FS mounted at '%s'.\n",
 	    cpt_opt.lustre_mp);
     return (ret);
   }
   if ((cpt_opt.lustre_mp_fd = open(cpt_opt.lustre_mp, O_RDONLY)) < 0) {
     ret = -errno;
-    fprintf(stdout, "Cannot open mount point at '%s'.\n",
+    CT_ERROR(ret, "Cannot open mount point at '%s'.\n",
 	    cpt_opt.lustre_mp);
     return (ret);
   }
-  fprintf(stdout, "Debug mode : Setup worked.\n");
   return (ret);
 }
 
@@ -718,7 +744,7 @@ main(int ac,
       return (ret);
     }
   }
-  fprintf(stdout, "(dev msg) Values retrieved :\n"
+  printf("(DEBUG) Values retrieved :\n"
 	  "is_daemon : %d\n"
 	  "is_verbose : %d\n"
 	  "lustre_mp : %s\n",
@@ -729,7 +755,7 @@ main(int ac,
   //debug mode.
   unsigned int	i;
   for (i = 0; i < cpt_opt.arch_ind_count; i += 1)
-    fprintf(stdout, "(dev msg) Archive index retrieved :\n"
+    fprintf(stdout, "(DEBUG) Archive index retrieved :\n"
 	    "index %d\n",
 	    cpt_opt.arch_ind[i]);
 
