@@ -129,39 +129,6 @@ void		init_opt(void) {
 }
 
 /*
-** tmp syntax
-*/
-
-static int ct_load_stripe(const char *src, void *lovea, size_t *lovea_size)
-{
-	char	 lov_file[PATH_MAX];
-	int	 rc;
-	int	 fd;
-
-	snprintf(lov_file, sizeof(lov_file), "%s.lov", src);
-	CT_TRACE("reading stripe rules from '%s' for '%s'", lov_file, src);
-
-	fd = open(lov_file, O_RDONLY);
-	if (fd < 0) {
-		CT_ERROR(errno, "cannot open '%s'", lov_file);
-		return -ENODATA;
-	}
-
-	rc = read(fd, lovea, *lovea_size);
-	if (rc < 0) {
-		CT_ERROR(errno, "cannot read %zu bytes from '%s'",
-			 *lovea_size, lov_file);
-		close(fd);
-		return -ENODATA;
-	}
-
-	*lovea_size = rc;
-	close(fd);
-
-	return 0;
-}
-
-/*
 ** Snprintf func
 */
 
@@ -314,6 +281,7 @@ archive_stripe(int src_fd,
   ssize_t		xattr_size;
   dpl_dict_t		*dict_var;
   dpl_value_t		value_var;
+  dpl_sbuf_t		sbuf;
   int			ret;
 
   dict_var = dpl_dict_new(DPL_DICT_NB);
@@ -324,6 +292,9 @@ archive_stripe(int src_fd,
     CT_ERROR(ret, "Cannot get stripe info on '%s'\n", src);
     return (NULL);
   }
+
+  printf("DEBUG : Archiving %s.\n", lov_buff);
+  //
   lum = (void *)lov_buff;
 
   if (lum->lmm_magic == LOV_USER_MAGIC_V1 ||
@@ -331,25 +302,31 @@ archive_stripe(int src_fd,
     lum->lmm_stripe_offset = -1;
   }
 
-  value_var.string->buf = (void *)lum;
-  value_var.string->len = xattr_size;
-  value_var.string->allocated = 0;
+  printf("went to 001\n");
+
+  //dpl_sbuf_add(&sbuf, (void *)lum, xattr_size);
+  value_var.string = &sbuf;
+
+  sbuf.buf = (void *)lum;
+  sbuf.len = xattr_size;
+  sbuf.allocated = 0;
   value_var.type = DPL_VALUE_STRING;
+
+  printf("went to 002\n");
 
   dpl_dict_add_value(dict_var, XATTR_LUSTRE_LOV, &value_var, 0);
   return (dict_var);
 }
 
-struct lov_user_md *
+char *
 restore_stripe (dpl_dict_t *dict_var) {
   char			*buff;
   struct lov_user_md	*lum;
   int			ret;
 
   buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
-  lum = (void *)buff;
   //FIXME memdup
-  return (lum);
+  return (buff);
 }
 
 
@@ -374,13 +351,15 @@ remove_data(const struct hsm_action_item *hai,
     OPENSSL_free(BNHEX);
     return (ret);
   } else {
+    ret = 0;
     CT_TRACE("Dpl_delete_id done successfully for operation remove data.\n");
   }
-  return (1);
-  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, abs(0))) < 0) {
-    CT_ERROR(ret, "Couldn' notify properly the coordinator to end operation remove data.\n");
+  //bug ici, le ret est toujours négatif... pourquoi?
+  if ((ret = llapi_hsm_action_end(&hcp, &hai->hai_extent, 0, ret)) < 0) {
+    CT_ERROR(ret, "Couldn't notify properly the coordinator to end operation remove data.\n");
     return (ret);
   }
+  CT_TRACE("Coordinator notified properly.\n");
 }
 
 static int
@@ -396,25 +375,24 @@ restore_data(const struct hsm_action_item *hai,
   int				mdt_index = -1;
   int				open_flags = 0;
   bool				set_lovea;
+  //
   char				lov_buff[XATTR_SIZE_MAX];
   size_t			lov_size = sizeof(lov_buff);
+  //
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
   };
   unsigned int			lenp;
-  struct lov_user_md		*lum;
-  dpl_dict_t			*dict_var;
+  char				*buff_attr;
+  dpl_dict_t			*dict_var = NULL;
   dpl_status_t			dpl_ret;
   int				ret;
-
-  // check for NULL
 
   if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0) {
     ret = lustre_fd;
     CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.\n");
-    //FIXME goto fini;
-    return (ret);
+    goto fini;
   }
 
   if ((ret = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0) {
@@ -422,8 +400,22 @@ restore_data(const struct hsm_action_item *hai,
     return (ret);
   }
 
+  if (!(BNHEX = BN_bn2hex(BN)))
+    return (-ENOMEM);
+  //FIXME Range to be implemented for large size data
+  if ((dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL))
+      != DPL_SUCCESS) {
+    ret = -EINVAL;
+    CT_ERROR(ret, "DPL_GET_ID failed for operation restore data = %s.\n", dpl_status_str(dpl_ret));
+    OPENSSL_free(BNHEX);
+    goto fini;
+  } else {
+    CT_TRACE("Dpl_get_id done successfully for operation restore data.\n");
+  }
+  buff_attr = restore_stripe(dict_var);
+
   //xattr set
-  if ((ret = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, lov_buff, lov_size, XATTR_CREATE)) < 0) {
+  if (!dict_var) {
     ret = -errno;
     CT_ERROR(ret, "Cannot set lov EA on '%s' for operation restore data.\n", lustre_fd);
     set_lovea = false;
@@ -432,25 +424,21 @@ restore_data(const struct hsm_action_item *hai,
     set_lovea = true;
   }
 
-  //FIXME interpret lov file once recovered
-
-  if (!(BNHEX = BN_bn2hex(BN)))
-    return (-ENOMEM);
-  //FIXME Range to be implemented for large size data
-  if ((dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL))
-      != DPL_SUCCESS) {
-    lum = restore_stripe(dict_var);
-    ret = -EINVAL;
-    CT_ERROR(ret, "DPL_GET_ID failed for operation restore data = %s.\n", dpl_status_str(dpl_ret));
-    OPENSSL_free(BNHEX);
-    return (ret);
-  } else {
-    CT_TRACE("Dpl_get_id done successfully for oepration restore data.\n");
+  if (set_lovea) {
+    if ((ret = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff_attr, XATTR_SIZE_MAX, XATTR_CREATE)) < 0) {
+      CT_ERROR(ret, "Cannot set ATTR properly for action restore.\n");
+      goto fini;
+    }
   }
+
   offset = hai->hai_extent.length;
-  if ((pwrite(lustre_fd, buff_data, lenp, offset)) < 0)
-    return (-REP_RET_VAL);
+  if ((ret = pwrite(lustre_fd, buff_data, lenp, offset)) < 0) {
+    CT_ERROR(ret, "Couldn't properly write on Lustre's fd for action restore.\n");
+    goto fini;
+  }
   OPENSSL_free(BNHEX);
+
+ fini:
 
   if (buff_data)
     free(buff_data);
@@ -496,6 +484,7 @@ archive_data(const struct hsm_action_item *hai,
   CT_TRACE("BN_bn2hex done successfully for operation archive data.\n");
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
 
+  //FIXME --> segfault
   if (!(dict_var = archive_stripe(src_fd, src)))
     return (-REP_RET_VAL);
 
@@ -537,6 +526,7 @@ process_action(const struct hsm_action_item *hai,
   long long			recno = -1;
   int				linkno = 0;
 
+  printf("[DEBUG] Action : %d.\n", hai->hai_action);
   sprintf(fid, DFID, PFID(&hai->hai_fid));
   ret = llapi_fid2path(cpt_opt.lustre_mp, fid, path,
 		       sizeof(path), &recno, &linkno);
@@ -684,7 +674,10 @@ cpt_run(dpl_ctx_t *ctx) {
 	    hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
     //FIXME (?) check fs_name with strcmp.
     hai = hai_first(hal);
-    for (i = 0; i < hal->hal_count; ++i) {
+    if (hal->hal_count == 0) {
+      printf("Oy oy that was a 0 on the hal->hal_count scale !!\n");
+    }
+    for (i = 0; i < hal->hal_count; ++i) { /////////////////////////////////////////
       char			*tmp;
 
       if (!(BN = uks_key_from_fid(hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver)))
