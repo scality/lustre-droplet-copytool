@@ -171,6 +171,7 @@ ct_begin_restore(struct hsm_copyaction_private **phcp,
 	       dot_lustre_name, PFID(&hai->hai_fid));
       CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed\n", src);
     }
+  DPRINTF("Action begin_restore worked properly.\n");
   return (ret);
 }
 
@@ -300,7 +301,7 @@ static int
 cpt_fini(struct hsm_copyaction_private **phcp,
 	const struct hsm_action_item *hai,
 	int hp_flags,
-	int ct_rc)
+	int cpt_ret)
 {
 	struct hsm_copyaction_private	*hcp;
 	char				 lstr[PATH_MAX];
@@ -309,10 +310,8 @@ cpt_fini(struct hsm_copyaction_private **phcp,
 	CT_TRACE("Action completed, notifying coordinator "
 		 "cookie="LPX64", FID="DFID", hp_flags=%d err=%d",
 		 hai->hai_cookie, PFID(&hai->hai_fid),
-		 hp_flags, -ct_rc);
-
+		 hp_flags, -cpt_ret);
 	ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
-
 	if (phcp == NULL || *phcp == NULL) {
 		ret = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true);
 		if (ret < 0) {
@@ -322,17 +321,16 @@ cpt_fini(struct hsm_copyaction_private **phcp,
 		}
 		phcp = &hcp;
 	}
-
-	rc = llapi_hsm_action_end(phcp, &hai->hai_extent, hp_flags, abs(ct_rc));
-	if (rc == -ECANCELED)
-		CT_ERROR(rc, "completed action on '%s' has been canceled: "
+	ret = llapi_hsm_action_end(phcp, &hai->hai_extent, hp_flags, abs(cpt_ret));
+	if (ret == -ECANCELED)
+		CT_ERROR(ret, "completed action on '%s' has been canceled: "
 			 "cookie="LPX64", FID="DFID, lstr, hai->hai_cookie,
 			 PFID(&hai->hai_fid));
-	else if (rc < 0)
-		CT_ERROR(rc, "llapi_hsm_action_end() on '%s' failed", lstr);
+	else if (ret < 0)
+		CT_ERROR(ret, "llapi_hsm_action_end() on '%s' failed", lstr);
 	else
-		CT_TRACE("llapi_hsm_action_end() on '%s' ok (rc=%d)",
-			 lstr, rc);
+		CT_TRACE("llapi_hsm_action_end() ok (ret=%d)",
+			 ret);
 
 	return ret;
 }
@@ -435,7 +433,7 @@ remove_data(const struct hsm_action_item *hai,
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -EINVAL;
-      CT_ERROR(ret, "DPL_DELETE_ID failed for operation remove data = '%s.", dpl_status_str(dpl_ret));
+      CT_ERROR(ret, "Dpl_delete_id failed for operation remove data = '%s.", dpl_status_str(dpl_ret));
       goto end;
     }
   else
@@ -476,10 +474,10 @@ restore_data(const struct hsm_action_item *hai,
   int				mdt_index = -1;
   int				open_flags = 0;
   bool				set_lovea;
-  //
+
   char				lov_buff[XATTR_SIZE_MAX];
   size_t			lov_size = sizeof(lov_buff);
-  //
+
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
@@ -490,6 +488,18 @@ restore_data(const struct hsm_action_item *hai,
   dpl_status_t			dpl_ret;
   int				ret, ret2;
 
+  if ((ret2 = llapi_get_mdt_index_by_fid(lustre_fd, &hai->hai_fid, &mdt_index)) < 0)
+    {
+      CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
+      ret = ret2;
+      goto end;
+    }
+
+  ret2 = ct_begin_restore(&hcp, hai, mdt_index, open_flags);
+  if (ret2 < 0)
+    goto end;
+
+
   if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0)
     {
       ret = -1;
@@ -497,18 +507,14 @@ restore_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0)
-    {
-      CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
-      ret = ret2;
-      goto end;
-    }
 
   if (!(BNHEX = BN_bn2hex(BN)))
     {
       ret = -ENOMEM;
       goto end;
     }
+
+  DPRINTF("Using BNHEX = %s.\n", BNHEX);
 
   //FIXME Range to be implemented for large size data
   dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
@@ -521,7 +527,6 @@ restore_data(const struct hsm_action_item *hai,
 
   CT_TRACE("Dpl_get_id done successfully for operation restore data.");
 
-  //xattr set
   if (!dict_var)
     {
       CT_ERROR(ret, "Cannot set lov EA on '%s' for operation restore data.", lustre_fd);
@@ -534,10 +539,6 @@ restore_data(const struct hsm_action_item *hai,
       buff_attr = restore_attr(dict_var);
     }
   
-  ret2 = ct_begin_restore(&hcp, hai, mdt_index, open_flags);
-  if (ret2 < 0)
-    goto end;
-
   if (set_lovea)
     {
       ret2 = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff_attr, XATTR_SIZE_MAX, XATTR_CREATE);
@@ -547,6 +548,8 @@ restore_data(const struct hsm_action_item *hai,
 	  ret = ret2;
 	  goto end;
 	}
+      else
+	DPRINTF("ATTR were set properly for action restore.\n");
     }
 
   offset = hai->hai_extent.length;
@@ -564,6 +567,7 @@ restore_data(const struct hsm_action_item *hai,
  end:
 
   ret2 = cpt_fini(&hcp, hai, 0, ret);
+  DPRINTF("Coordinator was properly notified for action restore.\n");
   ret = ret2;
 
   if (buff_data)
@@ -582,6 +586,7 @@ archive_data(const struct hsm_action_item *hai,
 	     const BIGNUM *BN)
 {
   char				*buff_data = MAP_FAILED;
+  size_t			buff_len = 0;
   int				ret, ret2;
   struct hsm_copyaction_private	*hcp = NULL;
   char				src[PATH_MAX];
@@ -589,7 +594,6 @@ archive_data(const struct hsm_action_item *hai,
   int				src_fd = -1;
   int				rcf = 0;
   char				*BNHEX = NULL;
-  char				lstr[PATH_MAX];
   int				ct_rc = 0;
   dpl_option_t			dpl_opts = {
     .mask = DPL_OPTION_CONSISTENT,
@@ -601,13 +605,15 @@ archive_data(const struct hsm_action_item *hai,
   if (ret2 < 0)
     goto end;
 
-  snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_dfid));
+  ct_path_lustre(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_dfid);
+
+  CT_TRACE("Archiving '%s' to the ring.", src);
 
   src_fd = llapi_hsm_action_get_fd(hcp);
   if (src_fd < 0)
     {
-      DPRINTF("src_fd invalid\n");
-      ret = -EINVAL;
+      ret = src_fd;
+      CT_ERROR(ret, "Cannot open '%s' for read.", src);
       goto end;
     }
 
@@ -617,6 +623,8 @@ archive_data(const struct hsm_action_item *hai,
       CT_ERROR(ret, "Couldn't stat '%s' for operation archive data.", src);
       goto end;
     }
+
+  buff_len = src_st.st_size;
 
   if (!(BNHEX = BN_bn2hex(BN)))
     {
@@ -650,27 +658,30 @@ archive_data(const struct hsm_action_item *hai,
   
   CT_TRACE("Dpl_put_id done successfully for operation archive data.");
 
-  CT_TRACE("Action completed, notifying coordinator.");
-
-  //FIXME check ptr value not NULL for hcp
-
-  snprintf(lstr, sizeof(lstr), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp, dot_lustre_name, PFID(&hai->hai_fid));
-
   ret = 0;
 
  end:
 
-  //FIXME munmap
+  ret2 = munmap(buff_data, buff_len);
+  if (ret2 < 0)
+    CT_ERROR(ret2, "Munmap failed on operation archive data.");
 
   ret2 = cpt_fini(&hcp, hai, 0, ret);
   ret = ret2;
 
-  if (src_fd > 0)
-    close(src_fd);
+  if (!(src_fd < 0))
+    {
+      DPRINTF("Fd for archive : Successfully closed.\n");
+      close(src_fd);
+    }
 
   if (BNHEX)
-    OPENSSL_free(BNHEX);
+    {
+      DPRINTF("BNHEX for archive : Successfully free.\n");
+      OPENSSL_free(BNHEX);
+    }
 
+  DPRINTF("Archive operation successfully ended.\n");
   return (ret);
 }
 
@@ -686,7 +697,6 @@ process_action(const struct hsm_action_item *hai,
   long long			recno = -1;
   int				linkno = 0;
 
-  DPRINTF("Action : %d.\n", hai->hai_action);
   sprintf(fid, DFID, PFID(&hai->hai_fid));
   ret = llapi_fid2path(cpt_opt.lustre_mp, fid, path,
 		       sizeof(path), &recno, &linkno);
@@ -770,7 +780,8 @@ cpt_thread(void *data)
 
   ret = process_action(cttd->hai, cttd->hal_flags, cttd->ctx, cttd->BN);
 
-  free(cttd->hai);
+  if (cttd->hai)
+    free(cttd->hai);
   free(cttd);
   pthread_exit((void *)(intptr_t)ret);
 }
@@ -804,7 +815,8 @@ process_async(const struct hsm_action_item *hai,
   if ((ret = pthread_attr_init(&attr)) != 0)
     {
       CT_ERROR(ret, "pthread_attr_init failed for '%s' service.", cpt_opt.lustre_mp);
-      free(data->hai);
+      if (data->hai)
+	free(data->hai);
       free(data);
       return (-ret);
     }
@@ -839,32 +851,46 @@ cpt_run(dpl_ctx_t *ctx)
       struct hsm_action_item	*hai;
       BIGNUM			*BN = NULL;
       int				msg_size;
-      int				i;
-      
+      int				i = 0;
+
+      CT_TRACE("Waiting for message from kernel.");
+
       ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
-      if (ret == -ESHUTDOWN) {
-	CT_TRACE("Shutting down.");
-	break;
-      }
+      if (ret == -ESHUTDOWN)
+	{
+	  CT_TRACE("Shutting down.");
+	  break;
+	}
+      else if (ret < 0)
+	{
+	  CT_WARN("Cannot receive action list : '%s'.", strerror(-ret));
+	  break;
+	}
+
       CT_TRACE("Copytool fs=%s, archive#=%d, item_count=%d.",
 	       hal->hal_fsname, hal->hal_archive_id, hal->hal_count);
-      //FIXME (?) check fs_name with strcmp.
-      hai = hai_first(hal);
-      if (hal->hal_count == 0)
+
+      if (strcmp(hal->hal_fsname, fs_name) != 0)
 	{
-	  DPRINTF("Oy oy that was a 0 on the hal->hal_count scale !!\n");
+	  ret = -EINVAL;
+	  CT_ERROR(ret, "'%s' invalid fs name, expecting : '%s'",
+		   hal->hal_fsname, fs_name);
+	  break;
 	}
-      for (i = 0; i < hal->hal_count; ++i)
+
+      hai = hai_first(hal);
+
+      while (++i <= hal->hal_count)
 	{
 	  char			*tmp;
 
 	  if (!(BN = uks_key_from_fid(hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver)))
 	    return (-ENOMEM);
 	  tmp = BN_bn2hex(BN);
-	  //
+
 	  DPRINTF("BIGNUM = %s\n", tmp);
 	  DPRINTF("Current action : %i\n", hai->hai_action);
-	  //
+
 	  OPENSSL_free(tmp);
 
 	  process_async(hai, hal->hal_flags, ctx, BN);
@@ -882,6 +908,7 @@ cpt_setup()
   int		ret;
 
   arch_fd = -1;
+
   ret = llapi_search_fsname(cpt_opt.lustre_mp, fs_name);
   if (ret < 0)
     {
@@ -909,6 +936,7 @@ main(int ac,
 {
   int		ret;
   dpl_ctx_t	*ctx;
+  unsigned int	i;
   
   init_opt();
   if ((ret = get_opt(ac, av, &ctx)) < 0)
@@ -925,8 +953,6 @@ main(int ac,
 	  cpt_opt.is_verbose,
 	  cpt_opt.lustre_mp);
 
-  //debug mode.
-  unsigned int	i;
   for (i = 0; i < cpt_opt.arch_ind_count; i += 1)
     {
       DPRINTF("Archive index retrieved :\n"
