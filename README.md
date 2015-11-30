@@ -32,10 +32,23 @@ II. Instalation of the agent for the Lustre - Ring
 			|			|		 |			   |				|
 			|			*--OSS		 |			   |				|
 			|			|		Agent / Copytool---------------------HSM Space		|
-			|			*--OSS		       |		   |				|
+			|			*--OSS		       |		   |	      (Ring)		|
 			|			|		       |		   |				|
 			|			*----------------------*		   |				|
 			|			    Lustre Space			   |				|
+			*-----------------------------------------------------------------------------------------------*
+
+    Overview of the copytool :
+
+    	     	    	*-----------------------------------------------------------------------------------------------*
+			|												|
+			| NEW (no flag) ----[Archive]----> ARCHIVED ----[Release]----> RELEASED				|
+			|     	  			   |      ^ <----[Restore]---- 					|
+			|				   |	  | 							|
+			|				 Write  Archive							|
+			|				   |      |							|
+			|				   v	  |							|
+			|				     DIRTY							|
 			*-----------------------------------------------------------------------------------------------*
 
     Coordinator :
@@ -84,10 +97,10 @@ II. Instalation of the agent for the Lustre - Ring
 
     To activate an agent, you first need to have a fully functionnal client with both Lustre mounted on it,
     and an Sfused connector (step 1). On this client, juste launch this command :
-    # lhsmtool_posix --daemon --hsm-root $RING_MOUNT_POINT --archive=$NB_ARCHIVE $LUSTRE_MOUNT_POINT
-    Icon
+    # lhsmtool_posix --daemon --droplet-path=$DROPLET-PATH --droplet-name=$DROPLET-NAME
+      		     	      				   --archive=$NB_ARCHIVE $LUSTRE_MOUNT_POINT
 
-    The agent will now loop on your terminal, allowing you to monitor every action made.
+    Info : The agent will now loop on your terminal, allowing you to monitor every action made.
 
 
 
