@@ -443,15 +443,14 @@ remove_data(const struct hsm_action_item *hai,
   
   CT_TRACE("Dpl_delete_id done successfully for operation remove data.");
 
-  goto end;
-  
-  CT_TRACE("Coordinator notified properly.");
-
   ret = 0;
+  
+  goto end;
   
  end:
 
   ret2 = cpt_fini(&hcp, hai, 0, ret);
+  CT_TRACE("Coordinator notified properly.");
   ret = ret2;
 
   if (BNHEX)
