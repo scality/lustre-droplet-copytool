@@ -523,7 +523,7 @@ restore_data(const struct hsm_action_item *hai,
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -EINVAL;
-      CT_ERROR(ret, "DPL_GET_ID failed for operation restore data = %s.", dpl_status_str(dpl_ret));
+      CT_ERROR(ret, "Dpl_get_id failed for operation restore data = %s.", dpl_status_str(dpl_ret));
       goto end;
     }
 
