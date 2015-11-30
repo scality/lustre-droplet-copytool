@@ -488,17 +488,18 @@ restore_data(const struct hsm_action_item *hai,
   dpl_status_t			dpl_ret;
   int				ret, ret2;
 
-  if ((ret2 = llapi_get_mdt_index_by_fid(lustre_fd, &hai->hai_fid, &mdt_index)) < 0)
+  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0)
     {
       CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
       ret = ret2;
       goto end;
     }
+  DPRINTF("Mdt index retrieved for operation restore data.\n");
 
   ret2 = ct_begin_restore(&hcp, hai, mdt_index, open_flags);
   if (ret2 < 0)
     goto end;
-
+  DPRINTF("Ct begin successfull.\n");
 
   if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0)
     {
@@ -506,7 +507,7 @@ restore_data(const struct hsm_action_item *hai,
       CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.");
       goto end;
     }
-
+  DPRINTF("Lustre FD '%d' successfully opened for operation restore data.\n", lustre_fd);
 
   if (!(BNHEX = BN_bn2hex(BN)))
     {
@@ -516,7 +517,8 @@ restore_data(const struct hsm_action_item *hai,
 
   DPRINTF("Using BNHEX = %s.\n", BNHEX);
 
-  //FIXME Range to be implemented for large size data
+  //FIXME Range to be implemented for large size data.
+
   dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
   if (dpl_ret != DPL_SUCCESS)
     {
@@ -623,6 +625,12 @@ archive_data(const struct hsm_action_item *hai,
       CT_ERROR(ret, "Couldn't stat '%s' for operation archive data.", src);
       goto end;
     }
+  if (!S_ISREG(src_st.st_mode))
+    {
+      ret = -EINVAL;
+      CT_ERROR(ret, "'%s' is not a regular file.", src);
+      return (ret);
+    }
 
   buff_len = src_st.st_size;
 
@@ -632,7 +640,7 @@ archive_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  CT_TRACE("BN_bn2hex done successfully for operation archive data.");
+  DPRINTF("BN_bn2hex done successfully for operation archive data.");
 
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
   if (buff_data == MAP_FAILED)
