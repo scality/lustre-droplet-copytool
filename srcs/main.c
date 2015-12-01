@@ -314,10 +314,11 @@ cpt_fini(struct hsm_copyaction_private **phcp,
 	ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
 	if (phcp == NULL || *phcp == NULL) {
 		ret = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true);
-		if (ret < 0) {
-			CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed",
-				 lstr);
-			return ret;
+		if (ret < 0)
+		  {
+		    CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed",
+			     lstr);
+		    return ret;
 		}
 		phcp = &hcp;
 	}
@@ -375,7 +376,7 @@ archive_attr(int src_fd,
       return (NULL);
   }
 
-  DPRINTF("Archiving %s.\n", lov_buff);
+  DPRINTF("Archiving attr %s.\n", lov_buff);
 
   lum = (void *)lov_buff;
 
@@ -398,10 +399,12 @@ char *
 restore_attr (dpl_dict_t *dict_var)
 {
   char			*buff;
-  struct lov_user_md	*lum;
+  //struct lov_user_md	*lum;
   int			ret;
 
   buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
+  if (buff == NULL)
+    CT_ERROR(-EINVAL, "Couldn't restore XATTR from dpl_dict_get_value.");
   //FIXME memdup
   return (buff);
 }
@@ -486,6 +489,37 @@ restore_data(const struct hsm_action_item *hai,
   dpl_dict_t			*dict_var = NULL;
   dpl_status_t			dpl_ret;
   int				ret, ret2;
+  struct lu_fid			dfid;
+
+  if (!(BNHEX = BN_bn2hex(BN)))
+    {
+      ret = -ENOMEM;
+      goto end;
+    }
+
+  DPRINTF("Using BNHEX = %s.\n", BNHEX);
+
+  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
+  if (dpl_ret != DPL_SUCCESS)
+    {
+      ret = -EINVAL;
+      CT_ERROR(ret, "Dpl_get_id failed for operation restore data = '%s'.", dpl_status_str(dpl_ret));
+      goto end;
+    }
+
+  DPRINTF("Dpl_get_id done successfully for operation restore data, retrieved : %s", buff_data);
+
+  if (!dict_var)
+    {
+      CT_ERROR(ret, "Cannot set lov xattr on '%s' for operation restore data, using defaults.", lustre_fd);
+      set_lovea = false;
+    }
+  else
+    {
+      //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?)
+      set_lovea = true;
+      buff_attr = restore_attr(dict_var);
+    }
 
   if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0)
     {
@@ -500,65 +534,49 @@ restore_data(const struct hsm_action_item *hai,
     goto end;
   DPRINTF("Ct begin successfull.\n");
 
+  ret2 = llapi_hsm_action_get_dfid(hcp, &dfid);
+  if (ret2 < 0)
+    {
+      CT_ERROR(ret2, "restoring "DFID" , cannot get FID of created volatile file", PFID(&hai->hai_fid));
+      goto end;
+    }
+
+  snprintf(lpath, sizeof(lpath), "{VOLATILE}="DFID, PFID(&dfid));
+  CT_TRACE("Restoring file from ring to '%s'", lpath);
+
   if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0)
     {
       ret = -1;
       CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.");
       goto end;
     }
-  DPRINTF("Lustre FD '%d' successfully opened for operation restore data.\n", lustre_fd);
+  DPRINTF("File fd '%d' successfully opened for operation restore data.\n", lustre_fd);
 
-  if (!(BNHEX = BN_bn2hex(BN)))
-    {
-      ret = -ENOMEM;
-      goto end;
-    }
+  //FIXME Range to be implemented for large size data with offset(?).
 
-  DPRINTF("Using BNHEX = %s.\n", BNHEX);
-
-  //FIXME Range to be implemented for large size data.
-
-  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
-  if (dpl_ret != DPL_SUCCESS)
-    {
-      ret = -EINVAL;
-      CT_ERROR(ret, "Dpl_get_id failed for operation restore data = %s.", dpl_status_str(dpl_ret));
-      goto end;
-    }
-
-  CT_TRACE("Dpl_get_id done successfully for operation restore data.");
-
-  if (!dict_var)
-    {
-      CT_ERROR(ret, "Cannot set lov EA on '%s' for operation restore data.", lustre_fd);
-      set_lovea = false;
-    }
-  else
-    {
-      open_flags |= O_LOV_DELAY_CREATE;
-      set_lovea = true;
-      buff_attr = restore_attr(dict_var);
-    }
-  
   if (set_lovea)
     {
       ret2 = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff_attr, XATTR_SIZE_MAX, XATTR_CREATE);
       if (ret2 < 0)
 	{
 	  CT_ERROR(ret, "Cannot set ATTR properly for action restore.");
+	  DPRINTF("Error : %s.\n", strerror(errno));
 	  ret = ret2;
-	  goto end;
+	  //goto end;
 	}
       else
 	DPRINTF("ATTR were set properly for action restore.\n");
     }
 
-  offset = hai->hai_extent.length;
+  //
 
-  ret2 = pwrite(lustre_fd, buff_data, lenp, offset);
+  //offset = hai->hai_extent.length;
+
+  ret2 = write(lustre_fd, buff_data, lenp);
   if (ret2 < 0)
     {
       CT_ERROR(ret, "Couldn't properly write on Lustre's fd for action restore.");
+      DPRINTF("Error : %s.\n", strerror(errno));
       ret = ret2;
       goto end;
     }
@@ -568,7 +586,7 @@ restore_data(const struct hsm_action_item *hai,
  end:
 
   ret2 = cpt_fini(&hcp, hai, 0, ret);
-  DPRINTF("Coordinator was properly notified for action restore.\n");
+  DPRINTF("Coordinator successfully notified for action restore.\n");
   ret = ret2;
 
   if (buff_data)
@@ -639,11 +657,12 @@ archive_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  DPRINTF("BN_bn2hex done successfully for operation archive data.");
+  DPRINTF("BN_bn2hex done successfully for operation archive data.\n");
 
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
   if (buff_data == MAP_FAILED)
     {
+      DPRINTF("mmap failed with %s.\n", strerror(errno));
       ret = errno;
       goto end;
     }
@@ -669,11 +688,15 @@ archive_data(const struct hsm_action_item *hai,
 
  end:
 
-  ret2 = munmap(buff_data, buff_len);
-  if (ret2 < 0)
-    CT_ERROR(ret2, "Munmap failed on operation archive data.");
+  if (buff_data != MAP_FAILED)
+    {
+      ret2 = munmap(buff_data, buff_len);
+      if (ret2 < 0)
+	CT_ERROR(ret2, "Munmap failed on operation archive data.");
+    }
 
   ret2 = cpt_fini(&hcp, hai, 0, ret);
+  DPRINTF("Coordinator successfully notified for action archive.\n");
   ret = ret2;
 
   if (!(src_fd < 0))
