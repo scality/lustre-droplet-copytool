@@ -25,10 +25,6 @@
 #include <openssl/bn.h>
 #include <droplet.h>
 
-/*
-** Defines
-*/
-
 //#define NDEBUG
 
 #ifdef NDEBUG
@@ -128,8 +124,10 @@ struct		s_opt
 		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
 /*
-** Initializing and getting pre-running options for the daemon copytool.
-*/
+ * Initializing cpt_opt wich is a global structure containing informations such
+ * as is the copytool launched as daemon and what parameters it's using
+ * (mount point, archive id...).
+ */
 
 void		init_opt(void)
 {
@@ -142,59 +140,13 @@ void		init_opt(void)
 }
 
 /*
-** Snprintf func
-*/
-
-static int
-ct_path_lustre(char *buf,
-	       int sz,
-	       const char *mnt,
-	       const lustre_fid *fid)
-{
-  return snprintf(buf, sz, "%s/%s/fid/"DFID_NOBRACE, mnt,
-		  dot_lustre_name, PFID(fid));
-}
-
-static int
-ct_begin_restore(struct hsm_copyaction_private **phcp,
-		 const struct hsm_action_item *hai,
-		 int mdt_index,
-		 int open_flags)
-{
-  int	 ret;
-  char	 src[PATH_MAX];
-  
-  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags, false);
-  if (ret < 0)
-    {
-      snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp,
-	       dot_lustre_name, PFID(&hai->hai_fid));
-      CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed\n", src);
-    }
-  DPRINTF("Action begin_restore worked properly.\n");
-  return (ret);
-}
-
-static int
-ct_path_archive(char *buf,
-		int sz,
-		const char *archive_dir,
-		const lustre_fid *fid)
-{
-  return (snprintf(buf, sz, "%s/%04x/%04x/%04x/%04x/%04x/%04x/"
-		  DFID_NOBRACE, archive_dir,
-		  (fid)->f_oid       & 0xFFFF,
-		  (fid)->f_oid >> 16 & 0xFFFF,
-		  (unsigned int)((fid)->f_seq       & 0xFFFF),
-		  (unsigned int)((fid)->f_seq >> 16 & 0xFFFF),
-		  (unsigned int)((fid)->f_seq >> 32 & 0xFFFF),
-		  (unsigned int)((fid)->f_seq >> 48 & 0xFFFF),
-		   PFID(fid)));
-}
-
-/*
-** Opt_get
-*/
+ * Opt_get to retrieve options for the copytool. Options that have to be set
+ * by default are under that form :
+ * copytool --archive=$NB_ARCHIVE --droplet-path=$DROPLET_PATH
+ * --droplet-name=$DROPLET_NAME /lustre/mount/point
+ * Other options are --daemon to run the copytool as daemon, --help to trigger
+ * the copytool usage.
+ */
 
 int
 get_opt(int ac,
@@ -276,29 +228,50 @@ get_opt(int ac,
 }
 
 /*
-** Initializing daemon-mode.
-*/
+ * Snprintf that allows us to get lustre's path.
+ */
 
-int
-daemonize()
+static int
+cpt_get_lustre_path(char *buf,
+	       int sz,
+	       const char *mnt,
+	       const lustre_fid *fid)
 {
-  int		ret;
-  
-  if (cpt_opt.is_daemon)
-    {
-      if ((ret = daemon(1, 1)) < 0)
-	return (-(ret = errno));
-      CT_TRACE("Daemon created.");
-    }
-  return (1);
+  return snprintf(buf, sz, "%s/%s/fid/"DFID_NOBRACE, mnt,
+		  dot_lustre_name, PFID(fid));
 }
 
 /*
-** ending function
-*/
+ * Cpt_begin and cpt_fini are functions used to fill hcp structure
+ * and notify the coordinator that an action has started or has
+ * ended on the copytool.
+ * Not using them will mess up with the data flags and create
+ * an infinite loop status on the data on the coordinator unabling
+ * access to the data.
+ */
 
 static int
-cpt_fini(struct hsm_copyaction_private **phcp,
+cpt_begin(struct hsm_copyaction_private **phcp,
+		 const struct hsm_action_item *hai,
+		 int mdt_index,
+		 int open_flags)
+{
+  int	 ret;
+  char	 src[PATH_MAX];
+  
+  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags, false);
+  if (ret < 0)
+    {
+      snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp,
+	       dot_lustre_name, PFID(&hai->hai_fid));
+      CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed\n", src);
+    }
+  DPRINTF("Action begin_restore worked properly.\n");
+  return (ret);
+}
+
+static int
+cpt_end(struct hsm_copyaction_private **phcp,
 	const struct hsm_action_item *hai,
 	int hp_flags,
 	int cpt_ret)
@@ -311,7 +284,7 @@ cpt_fini(struct hsm_copyaction_private **phcp,
 		 "cookie="LPX64", FID="DFID", hp_flags=%d err=%d",
 		 hai->hai_cookie, PFID(&hai->hai_fid),
 		 hp_flags, -cpt_ret);
-	ct_path_lustre(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
+	cpt_get_lustre_path(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
 	if (phcp == NULL || *phcp == NULL) {
 		ret = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true);
 		if (ret < 0)
@@ -337,8 +310,27 @@ cpt_fini(struct hsm_copyaction_private **phcp,
 }
 
 /*
-** sig_hander
-*/
+ * Initializing daemon mode for the copytool.
+ */
+
+int
+daemonize()
+{
+  int		ret;
+  
+  if (cpt_opt.is_daemon)
+    {
+      if ((ret = daemon(1, 1)) < 0)
+	return (-(ret = errno));
+      CT_TRACE("Daemon created.");
+    }
+  return (1);
+}
+
+/*
+ * Signal handled to stop copytool. Will unregister the copytool
+ * from the coordinator and exit.
+ */
 
 static void
 sighand(int sig)
@@ -349,8 +341,12 @@ sighand(int sig)
 }
 
 /*
-** get / put data
-*/
+ * Function archive_attr will use droplet function dpl_dict_add_value
+ * in order to store the xattr in a dpl_dict_t used in the dpl_put_id.
+ * Function restore_attr will use droplet function dpl_dict_get_value
+ * in order to retrieve the xattr in a char * from a dpl_dict_t from
+ * the dpl_get_id.
+ */
 
 dpl_dict_t *
 archive_attr(int src_fd,
@@ -399,7 +395,6 @@ char *
 restore_attr (dpl_dict_t *dict_var)
 {
   char			*buff;
-  //struct lov_user_md	*lum;
   int			ret;
 
   buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
@@ -409,194 +404,19 @@ restore_attr (dpl_dict_t *dict_var)
   return (buff);
 }
 
-static int
-remove_data(const struct hsm_action_item *hai,
-	    const long hal_flags,
-	    dpl_ctx_t *ctx,
-	    const BIGNUM *BN) {
-  char				*BNHEX = NULL;
-  struct hsm_copyaction_private	*hcp = NULL;
-  dpl_option_t			dpl_opts = {
-    .mask = DPL_OPTION_CONSISTENT,
-  };
-  dpl_status_t			dpl_ret;
-  int				ret, ret2;
-
-  ret2 = ct_begin_restore(&hcp, hai, -1, 0);
-  if (ret2 < 0)
-    goto end;
- 
-  if (!(BNHEX = BN_bn2hex(BN)))
-    {
-      ret = -ENOMEM;
-      goto end;
-    }
-
-  dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL);
-  if (dpl_ret != DPL_SUCCESS)
-    {
-      ret = -EINVAL;
-      CT_ERROR(ret, "Dpl_delete_id failed for operation remove data = '%s.", dpl_status_str(dpl_ret));
-      goto end;
-    }
-  else
-    {
-      ret = 0;
-    }
-  
-  CT_TRACE("Dpl_delete_id done successfully for operation remove data.");
-
-  ret = 0;
-  
-  goto end;
-  
- end:
-
-  ret2 = cpt_fini(&hcp, hai, 0, ret);
-  CT_TRACE("Coordinator notified properly.");
-  ret = ret2;
-
-  if (BNHEX)
-    OPENSSL_free(BNHEX);
-  
-  return ret;
-}
-
-static int
-restore_data(const struct hsm_action_item *hai,
-	     const long hal_flags,
-	     dpl_ctx_t *ctx,
-	     const BIGNUM *BN)
-{
-  char				*buff_data = NULL;
-  char				*BNHEX = NULL;
-  char				lpath[PATH_MAX];
-  __u64				offset;
-  int				lustre_fd = -1;
-  int				mdt_index = -1;
-  int				open_flags = 0;
-  bool				set_lovea;
-
-  char				lov_buff[XATTR_SIZE_MAX];
-  size_t			lov_size = sizeof(lov_buff);
-
-  struct hsm_copyaction_private	*hcp = NULL;
-  dpl_option_t			dpl_opts = {
-    .mask = DPL_OPTION_CONSISTENT,
-  };
-  unsigned int			lenp;
-  char				*buff_attr = NULL;
-  dpl_dict_t			*dict_var = NULL;
-  dpl_status_t			dpl_ret;
-  int				ret, ret2;
-  struct lu_fid			dfid;
-
-  if (!(BNHEX = BN_bn2hex(BN)))
-    {
-      ret = -ENOMEM;
-      goto end;
-    }
-
-  DPRINTF("Using BNHEX = %s.\n", BNHEX);
-
-  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
-  if (dpl_ret != DPL_SUCCESS)
-    {
-      ret = -EINVAL;
-      CT_ERROR(ret, "Dpl_get_id failed for operation restore data = '%s'.", dpl_status_str(dpl_ret));
-      goto end;
-    }
-
-  DPRINTF("Dpl_get_id done successfully for operation restore data, retrieved : %s", buff_data);
-
-  if (!dict_var)
-    {
-      CT_ERROR(ret, "Cannot set lov xattr on '%s' for operation restore data, using defaults.", lustre_fd);
-      set_lovea = false;
-    }
-  else
-    {
-      //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?)
-      set_lovea = true;
-      buff_attr = restore_attr(dict_var);
-    }
-
-  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0)
-    {
-      CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
-      ret = ret2;
-      goto end;
-    }
-  DPRINTF("Mdt index retrieved for operation restore data.\n");
-
-  ret2 = ct_begin_restore(&hcp, hai, mdt_index, open_flags);
-  if (ret2 < 0)
-    goto end;
-  DPRINTF("Ct begin successfull.\n");
-
-  ret2 = llapi_hsm_action_get_dfid(hcp, &dfid);
-  if (ret2 < 0)
-    {
-      CT_ERROR(ret2, "restoring "DFID" , cannot get FID of created volatile file", PFID(&hai->hai_fid));
-      goto end;
-    }
-
-  snprintf(lpath, sizeof(lpath), "{VOLATILE}="DFID, PFID(&dfid));
-  CT_TRACE("Restoring file from ring to '%s'", lpath);
-
-  if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0)
-    {
-      ret = -1;
-      CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.");
-      goto end;
-    }
-  DPRINTF("File fd '%d' successfully opened for operation restore data.\n", lustre_fd);
-
-  //FIXME Range to be implemented for large size data with offset(?).
-
-  if (set_lovea)
-    {
-      ret2 = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff_attr, XATTR_SIZE_MAX, XATTR_CREATE);
-      if (ret2 < 0)
-	{
-	  CT_ERROR(ret, "Cannot set ATTR properly for action restore.");
-	  DPRINTF("Error : %s.\n", strerror(errno));
-	  ret = ret2;
-	  //goto end;
-	}
-      else
-	DPRINTF("ATTR were set properly for action restore.\n");
-    }
-
-  //
-
-  //offset = hai->hai_extent.length;
-
-  ret2 = write(lustre_fd, buff_data, lenp);
-  if (ret2 < 0)
-    {
-      CT_ERROR(ret, "Couldn't properly write on Lustre's fd for action restore.");
-      DPRINTF("Error : %s.\n", strerror(errno));
-      ret = ret2;
-      goto end;
-    }
-  
-  ret = 0;
-
- end:
-
-  ret2 = cpt_fini(&hcp, hai, 0, ret);
-  DPRINTF("Coordinator successfully notified for action restore.\n");
-  ret = ret2;
-
-  if (buff_data)
-    free(buff_data);
-
-  if (BNHEX)
-    OPENSSL_free(BNHEX);
-
-  return (ret);
-}
+/*
+ * - Function archive_data, restore_data and remove data.
+ * - Function archive_data will read from a file descriptor,
+ * bufferize the data and use dpl_put_id to store it on the
+ * ring using a UKS key generated from the lustre's FID.
+ * - Function restore_data will use dpl_get_id with the same UKS
+ * key used to store it on the ring to retrieve data
+ * on a char * and then write it on the lustre's file descriptor
+ * corresponding to the lustre data's location on the file system.
+ * - Function remove_data will remove the data on the ring using
+ * the same UKS key that was used to store it using dpl_delete_id,
+ * be sure though that the file is not on a release state on Lustre.
+ */
 
 static int
 archive_data(const struct hsm_action_item *hai,
@@ -620,11 +440,11 @@ archive_data(const struct hsm_action_item *hai,
   dpl_status_t			dpl_ret;
   dpl_dict_t			*dict_var;
 
-  ret2 = ct_begin_restore(&hcp, hai, -1, 0);
+  ret2 = cpt_begin(&hcp, hai, -1, 0);
   if (ret2 < 0)
     goto end;
 
-  ct_path_lustre(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_dfid);
+  cpt_get_lustre_path(src, sizeof(src), cpt_opt.lustre_mp, &hai->hai_dfid);
 
   CT_TRACE("Archiving '%s' to the ring.", src);
 
@@ -716,6 +536,200 @@ archive_data(const struct hsm_action_item *hai,
 }
 
 static int
+restore_data(const struct hsm_action_item *hai,
+	     const long hal_flags,
+	     dpl_ctx_t *ctx,
+	     const BIGNUM *BN)
+{
+  char				*buff_data = NULL;
+  char				*BNHEX = NULL;
+  char				lpath[PATH_MAX];
+  __u64				offset;
+  int				lustre_fd = -1;
+  int				mdt_index = -1;
+  int				open_flags = 0;
+  bool				set_lovea;
+
+  char				lov_buff[XATTR_SIZE_MAX];
+  size_t			lov_size = sizeof(lov_buff);
+
+  struct hsm_copyaction_private	*hcp = NULL;
+  dpl_option_t			dpl_opts = {
+    .mask = DPL_OPTION_CONSISTENT,
+  };
+  unsigned int			lenp;
+  char				*buff_attr = NULL;
+  dpl_dict_t			*dict_var = NULL;
+  dpl_status_t			dpl_ret;
+  int				ret, ret2;
+  struct lu_fid			dfid;
+
+  if (!(BNHEX = BN_bn2hex(BN)))
+    {
+      ret = -ENOMEM;
+      goto end;
+    }
+
+  DPRINTF("Using BNHEX = %s.\n", BNHEX);
+
+  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
+  if (dpl_ret != DPL_SUCCESS)
+    {
+      ret = -EINVAL;
+      CT_ERROR(ret, "Dpl_get_id failed for operation restore data = '%s'.", dpl_status_str(dpl_ret));
+      goto end;
+    }
+
+  DPRINTF("Dpl_get_id done successfully for operation restore data, retrieved : %s", buff_data);
+
+  if (!dict_var)
+    {
+      CT_ERROR(ret, "Cannot set lov xattr on '%s' for operation restore data, using defaults.", lustre_fd);
+      set_lovea = false;
+    }
+  else
+    {
+      //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?)
+      set_lovea = true;
+      buff_attr = restore_attr(dict_var);
+    }
+
+  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0)
+    {
+      CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
+      ret = ret2;
+      goto end;
+    }
+  DPRINTF("Mdt index retrieved for operation restore data.\n");
+
+  ret2 = cpt_begin(&hcp, hai, mdt_index, open_flags);
+  if (ret2 < 0)
+    goto end;
+  DPRINTF("Ct begin successfull.\n");
+
+  ret2 = llapi_hsm_action_get_dfid(hcp, &dfid);
+  if (ret2 < 0)
+    {
+      CT_ERROR(ret2, "restoring "DFID" , cannot get FID of created volatile file", PFID(&hai->hai_fid));
+      goto end;
+    }
+
+  snprintf(lpath, sizeof(lpath), "{VOLATILE}="DFID, PFID(&dfid));
+  CT_TRACE("Restoring file from ring to '%s'", lpath);
+
+  if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0)
+    {
+      ret = -1;
+      CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.");
+      goto end;
+    }
+  DPRINTF("File fd '%d' successfully opened for operation restore data.\n", lustre_fd);
+
+  //FIXME Range to be implemented for large size data with offset(?).
+
+  //FIXME attr buffer returns NULL from recovery at dpl_get_id -> is attr well set?
+  if (set_lovea)
+    {
+      ret2 = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff_attr, XATTR_SIZE_MAX, XATTR_CREATE);
+      if (ret2 < 0)
+	{
+	  CT_ERROR(ret, "Cannot set ATTR properly for action restore.");
+	  DPRINTF("Error : %s.\n", strerror(errno));
+	  ret = ret2;
+	  //goto end;
+	}
+      else
+	DPRINTF("ATTR were set properly for action restore.\n");
+    }
+
+  //offset = hai->hai_extent.length; -> Range implementation to be fixed.
+
+  ret2 = write(lustre_fd, buff_data, lenp);
+  if (ret2 < 0)
+    {
+      CT_ERROR(ret, "Couldn't properly write on Lustre's fd for action restore.");
+      DPRINTF("Error : %s.\n", strerror(errno));
+      ret = ret2;
+      goto end;
+    }
+  
+  ret = 0;
+
+ end:
+
+  ret2 = cpt_fini(&hcp, hai, 0, ret);
+  DPRINTF("Coordinator successfully notified for action restore.\n");
+  ret = ret2;
+
+  if (buff_data)
+    free(buff_data);
+
+  if (BNHEX)
+    OPENSSL_free(BNHEX);
+
+  return (ret);
+}
+
+static int
+remove_data(const struct hsm_action_item *hai,
+	    const long hal_flags,
+	    dpl_ctx_t *ctx,
+	    const BIGNUM *BN) {
+  char				*BNHEX = NULL;
+  struct hsm_copyaction_private	*hcp = NULL;
+  dpl_option_t			dpl_opts = {
+    .mask = DPL_OPTION_CONSISTENT,
+  };
+  dpl_status_t			dpl_ret;
+  int				ret, ret2;
+
+  ret2 = cpt_begin(&hcp, hai, -1, 0);
+  if (ret2 < 0)
+    goto end;
+ 
+  if (!(BNHEX = BN_bn2hex(BN)))
+    {
+      ret = -ENOMEM;
+      goto end;
+    }
+
+  dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL);
+  if (dpl_ret != DPL_SUCCESS)
+    {
+      ret = -EINVAL;
+      CT_ERROR(ret, "Dpl_delete_id failed for operation remove data = '%s.", dpl_status_str(dpl_ret));
+      goto end;
+    }
+  else
+    {
+      ret = 0;
+    }
+  
+  CT_TRACE("Dpl_delete_id done successfully for operation remove data.");
+
+  ret = 0;
+  
+  goto end;
+  
+ end:
+
+  ret2 = cpt_fini(&hcp, hai, 0, ret);
+  CT_TRACE("Coordinator notified properly.");
+  ret = ret2;
+
+  if (BNHEX)
+    OPENSSL_free(BNHEX);
+  
+  return ret;
+}
+
+/*
+ * Function process_action will use hai structure to interpret commands given
+ * to the copytool, if it's either archive, restore or remove on the hai->hai_action.
+ * Hai stands for HSM Action Item, wich is part of a list (hal).
+ */
+
+static int
 process_action(const struct hsm_action_item *hai,
 	       const long hal_flags,
 	       dpl_ctx_t *ctx,
@@ -766,8 +780,13 @@ process_action(const struct hsm_action_item *hai,
 }
 
 /*
-** hash [24 md5(total) ^ 8 f_ver lsb] - oid [f_seq] - volid [f_oid] - srv [] - spec [f_ver 24 msb]
-*/
+ * Function uks_key_from_fid will use the fid provided by Lustre in
+ * order to generate a UKS key used to locate the data on the Ring
+ * for actions archive, restore and remove.
+ * The UKS key will be calculated from the fid using the following
+ * pattern :
+ * hash [24 md5(total) ^ 8 f_ver lsb] / oid [f_seq] / volid [f_oid] / srv [] / spec [f_ver 24 msb]
+ */
 
 BIGNUM *
 uks_key_from_fid(int64_t f_seq,
@@ -791,8 +810,10 @@ uks_key_from_fid(int64_t f_seq,
 }
 
 /*
-** cpt_functions.
-*/
+ * Functions cpt_thread and process_async are functions that will
+ * use multi-threading to treat each action separately in a competitive
+ * way.
+ */
 
 struct ct_th_data
 {
@@ -858,6 +879,13 @@ process_async(const struct hsm_action_item *hai,
   pthread_attr_destroy(&attr);
   return (0);
 }
+
+/*
+ * Function cpt_run contains the loop that will allow us to wait
+ * for instructions from the copytool.
+ * It will handle signals SIGINT and SIGTERM.
+ * Action list is handled by structure hal wich stands for HSM Action List.
+ */
 
 static int
 cpt_run(dpl_ctx_t *ctx)
@@ -932,6 +960,12 @@ cpt_run(dpl_ctx_t *ctx)
   return (ret);
 }
 
+/*
+ * Function cpt_setup is used to check FS Lustre exists and is
+ * correctly mounted. It will also open a file descriptor on the
+ * Lustre mount point.
+ */
+
 static int
 cpt_setup()
 {
@@ -957,7 +991,7 @@ cpt_setup()
 }
 
 /*
-** Main.
+** Main function.
 */
 
 int
