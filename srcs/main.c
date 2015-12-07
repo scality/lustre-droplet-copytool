@@ -1,3 +1,14 @@
+/**
+ * @file README.md
+ * @author Olivier Conan
+ * @date 2015
+ * @brief .c containing the lustre-droplet-copytool code.
+ *
+ * Here typically goes a more extensive explanation of what the header
+ * defines. Doxygens tags are words preceeded by either a backslash @\
+ * or by an at symbol @@.
+ */
+
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
@@ -38,7 +49,6 @@
 #define	KEY_SIZE	        159
 #define	PATH_MAX	        4096
 
-#define	REP_RET_VAL	        1
 #define	DPL_DICT_NB		1
 
 static inline double		ct_now(void)
@@ -123,29 +133,40 @@ struct		s_opt
 		    "%f %s[%ld]: "_format,				\
 		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
-/*
- * Initializing cpt_opt wich is a global structure containing informations such
+/**
+ * @brief Function that initialize cpt_opt structure containing informations such
  * as is the copytool launched as daemon and what parameters it's using
  * (mount point, archive id...).
+ *
+ * @return No return variable.
  */
 
 void		init_opt(void)
 {
-  cpt_opt.is_daemon = 0;
-  cpt_opt.is_verbose = 0;
-  cpt_opt.arch_ind_count = 0;
-  cpt_opt.lustre_mp = NULL;
-  cpt_opt.lustre_mp_fd = -1;
-  cpt_data = NULL;
+  cpt_opt.is_daemon = 0; /**< daemon option */
+  cpt_opt.is_verbose = 0; /**< verbose option */
+  cpt_opt.arch_ind_count = 0; /**< number of archive index */
+  cpt_opt.lustre_mp = NULL; /**< lustre mount point */
+  cpt_opt.lustre_mp_fd = -1; /**< lustre mount point fd */
+  cpt_data = NULL; /**< hsm_copytool_private structure */
 }
 
-/*
- * Opt_get to retrieve options for the copytool. Options that have to be set
- * by default are under that form :
- * copytool --archive=$NB_ARCHIVE --droplet-path=$DROPLET_PATH
- * --droplet-name=$DROPLET_NAME /lustre/mount/point
+/**
+ * @brief Function that retrieves options for the copytool. Options that
+ * have to be set by default are under that form:
+ * # copytool --archive=$NB_ARCHIVE --droplet-path=$DROPLET_PATH
+ *   --droplet-name=$DROPLET_NAME /lustre/mount/point
  * Other options are --daemon to run the copytool as daemon, --help to trigger
- * the copytool usage.
+ * the copytool usage. 
+ *
+ * @param phcp - hcp copy structure containing the cpt_begin parameters
+ * @param hai - hsm_action_item structure
+ * @param mdt_index - int variable defining hsm index number
+ * @param open_flags - int variable defining flags set
+ * @see archive_data()
+ * @see restore_data()
+ * @see remove_data()
+ * @return Returns negative value upon failure or 0 upon success.
  */
 
 int
@@ -155,12 +176,12 @@ get_opt(int ac,
 {
   int		trig;
   struct option	long_opts[] = {
-    {"archive",		required_argument,	NULL,			'A'},
+    {"archive",		required_argument,	NULL,			'A'}, /**< archive number */
     {"daemon",		no_argument,		&cpt_opt.is_daemon,	1},
     {"help",		no_argument,		0,			'h'},
     {"verbose",		no_argument,		0,			'v'},
-    {"droplet-path",	required_argument,	0,			'p'},
-    {"droplet-name",	required_argument,	0,			'n'},
+    {"droplet-path",	required_argument,	0,			'p'}, /**< droplet profile file's path */
+    {"droplet-name",	required_argument,	0,			'n'}, /**< droplet profile file's name */
     {0, 0, 0, 0}
   };
   int		opt_ind = 0;
@@ -197,7 +218,7 @@ get_opt(int ac,
 	break;
       }
   DPRINTF("name = %s - path = %s\n", d_name, d_path);
-  if ((!d_path) || (!d_name))
+  if ((!d_path) || (!d_name)) /**< if no droplet name or path are specified */
     {
       ret = -EINVAL;
       CT_ERROR(ret, "No specified droplet_profile path or name.");
@@ -209,13 +230,13 @@ get_opt(int ac,
       CT_ERROR(ret, "Invalid options, try --help or -h for more informations.");
       return (ret);
     }
-  if (ac != optind + 1 && optind >= MIN_OPT)
+  if (ac != optind + 1 && optind >= MIN_OPT) /**< if no lustre mount point's path is specified */
     {
       ret = -EINVAL;
       CT_ERROR(ret, "No lustre mount point specified.");
       return (ret);
     }
-  cpt_opt.lustre_mp = av[optind];
+  cpt_opt.lustre_mp = av[optind]; /**< retrieving lustre mount point's path */
   if (!(*ctx = dpl_ctx_new(d_path, d_name)))
     return (-EINVAL);
   if (cpt_opt.lustre_mp == NULL)
@@ -227,8 +248,10 @@ get_opt(int ac,
   return (1);
 }
 
-/*
- * Snprintf that allows us to get lustre's path.
+/**
+ * @brief Function that gets the lustre's file path.
+ *
+ * @return Returns snprintf return value on success or failure.
  */
 
 static int
@@ -241,13 +264,19 @@ cpt_get_lustre_path(char *buf,
 		  dot_lustre_name, PFID(fid));
 }
 
-/*
- * Cpt_begin and cpt_fini are functions used to fill hcp structure
- * and notify the coordinator that an action has started or has
- * ended on the copytool.
- * Not using them will mess up with the data flags and create
- * an infinite loop status on the data on the coordinator unabling
- * access to the data.
+/**
+ * @brief Function that starts a copytool command by notifying the coordinator
+ * the action could complete normally what action is to about to be
+ * treated and on wich hsm index it's taking action.
+ *
+ * @param phcp - hcp copy structure containing the cpt_begin parameters
+ * @param hai - hsm_action_item structure
+ * @param mdt_index - int variable defining hsm index number
+ * @param open_flags - int variable defining flags set
+ * @see archive_data()
+ * @see restore_data()
+ * @see remove_data()
+ * @return Returns negative value upon failure or 0 upon success.
  */
 
 static int
@@ -259,16 +288,32 @@ cpt_begin(struct hsm_copyaction_private **phcp,
   int	 ret;
   char	 src[PATH_MAX];
   
-  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags, false);
+  ret = llapi_hsm_action_begin(phcp, cpt_data, hai, mdt_index, open_flags, false); /**< llapi function to notify coordinator */
   if (ret < 0)
     {
       snprintf(src, sizeof(src), "%s/%s/fid/"DFID_NOBRACE, cpt_opt.lustre_mp,
 	       dot_lustre_name, PFID(&hai->hai_fid));
       CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed\n", src);
+      return (ret);
     }
   DPRINTF("Action begin_restore worked properly.\n");
   return (ret);
 }
+
+/**
+ * @brief Function that ends a copytool command by notifying the coordinator
+ * that everything went well and that the action could complete normally.
+ * It will also display informations on the outgoing of the action.
+ *
+ * @param phcp - hcp copy structure containing the cpt_begin parameters
+ * @param hai - hsm_action_item structure
+ * @param hp_flags - int variable defining flags used to read/write
+ * @param cpt_ret - return value of current action function
+ * @see archive_data()
+ * @see restore_data()
+ * @see remove_data()
+ * @return Returns negative value upon failure or 0 upon success.
+ */
 
 static int
 cpt_end(struct hsm_copyaction_private **phcp,
@@ -276,41 +321,42 @@ cpt_end(struct hsm_copyaction_private **phcp,
 	int hp_flags,
 	int cpt_ret)
 {
-	struct hsm_copyaction_private	*hcp;
-	char				 lstr[PATH_MAX];
-	int				 ret;
-
-	CT_TRACE("Action completed, notifying coordinator "
-		 "cookie="LPX64", FID="DFID", hp_flags=%d err=%d",
-		 hai->hai_cookie, PFID(&hai->hai_fid),
-		 hp_flags, -cpt_ret);
-	cpt_get_lustre_path(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid);
-	if (phcp == NULL || *phcp == NULL) {
-		ret = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true);
-		if (ret < 0)
-		  {
-		    CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed",
-			     lstr);
-		    return ret;
-		}
-		phcp = &hcp;
-	}
-	ret = llapi_hsm_action_end(phcp, &hai->hai_extent, hp_flags, abs(cpt_ret));
-	if (ret == -ECANCELED)
-		CT_ERROR(ret, "completed action on '%s' has been canceled: "
-			 "cookie="LPX64", FID="DFID, lstr, hai->hai_cookie,
-			 PFID(&hai->hai_fid));
-	else if (ret < 0)
-		CT_ERROR(ret, "llapi_hsm_action_end() on '%s' failed", lstr);
-	else
-		CT_TRACE("llapi_hsm_action_end() ok (ret=%d)",
-			 ret);
-
+  struct hsm_copyaction_private	*hcp; /**< structure that will be used as backup if phcp is NULL */
+  char				 lstr[PATH_MAX];
+  int				 ret;
+  
+  CT_TRACE("Action completed, notifying coordinator "
+	   "cookie="LPX64", FID="DFID", hp_flags=%d err=%d",
+	   hai->hai_cookie, PFID(&hai->hai_fid),
+	   hp_flags, -cpt_ret);
+  cpt_get_lustre_path(lstr, sizeof(lstr), cpt_opt.lustre_mp, &hai->hai_fid); /**< get lustre mount point's path */
+  if (phcp == NULL || *phcp == NULL) { /**< check if phcp wasn't initiated */
+    ret = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true); /**< if phcp is NULL initiate it */
+    if (ret < 0)
+      {
+	CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed",
+		 lstr);
 	return ret;
+      }
+    phcp = &hcp;
+  }
+  ret = llapi_hsm_action_end(phcp, &hai->hai_extent, hp_flags, abs(cpt_ret)); /**< notifying coordinator that action is done */
+  if (ret == -ECANCELED)
+    CT_ERROR(ret, "completed action on '%s' has been canceled: "
+	     "cookie="LPX64", FID="DFID, lstr, hai->hai_cookie,
+	     PFID(&hai->hai_fid));
+  else if (ret < 0)
+    CT_ERROR(ret, "llapi_hsm_action_end() on '%s' failed", lstr);
+  else
+    CT_TRACE("llapi_hsm_action_end() ok (ret=%d)",
+	     ret);
+  return ret;
 }
 
-/*
- * Initializing daemon mode for the copytool.
+/**
+ * @brief Trigger daemon mode upon receiving right options.
+ *
+ * @see main()
  */
 
 int
@@ -327,25 +373,32 @@ daemonize()
   return (1);
 }
 
-/*
- * Signal handled to stop copytool. Will unregister the copytool
- * from the coordinator and exit.
+/**
+ * @brief Signal handler for SIGINT, SIGTERM, will unregister from
+ * the coordinator before exiting the copytool.
+ *
+ * @see cpt_run()
  */
 
 static void
 sighand(int sig)
 {
   psignal(sig, "exiting");
-  llapi_hsm_copytool_unregister(&cpt_data);
+  llapi_hsm_copytool_unregister(&cpt_data); /**< Upon receiving signal unregister the copytool */
   exit(1);
 }
 
-/*
- * Function archive_attr will use droplet function dpl_dict_add_value
- * in order to store the xattr in a dpl_dict_t used in the dpl_put_id.
- * Function restore_attr will use droplet function dpl_dict_get_value
- * in order to retrieve the xattr in a char * from a dpl_dict_t from
- * the dpl_get_id.
+/**
+ * @brief Function that will use dpl_dict_add_value in order to 
+ * store the xattr in a dpl_dict_t format to be used as parameter
+ * for the dpl_put_id.
+ *
+ * @param src_fd - wich is the fd of the xattr's file
+ * @param src - wich is the path of the xattr's file
+ * @see restore_attr()
+ * @see archive_data()
+ * @return Returns a dpl_dict_t * containing the xattr upon success or
+ * NULL upon failure.
  */
 
 dpl_dict_t *
@@ -387,35 +440,63 @@ archive_attr(int src_fd,
   sbuf.allocated = 0;
   value_var.type = DPL_VALUE_STRING;
 
-  dpl_dict_add_value(dict_var, XATTR_LUSTRE_LOV, &value_var, 0);
+  dpl_dict_add_value(dict_var, XATTR_LUSTRE_LOV, &value_var, 0); /**< adding attr structure to dpl_dict_t */
   return (dict_var);
 }
 
-char *
-restore_attr (dpl_dict_t *dict_var)
-{
-  char			*buff;
-  int			ret;
+/**
+ * @brief Function that will use dpl_dict_get_value in order to 
+ * bufferize xattr that were saved on the Ring in the format
+ * dpl_dict_t.
+ *
+ * @param dict_var - dpl_dict_t containing the xattr
+ * @see archive_attr()
+ * @see restore_data()
+ * @return Returns a char * containing the xattr upon success or
+ * @return NULL upon failure.
+ */
 
-  buff = dpl_dict_get_value(dict_var, XATTR_LUSTRE_LOV);
-  if (buff == NULL)
-    CT_ERROR(-EINVAL, "Couldn't restore XATTR from dpl_dict_get_value.");
-  //FIXME memdup
-  return (buff);
+int
+restore_attr (dpl_dict_t *dict_var, int lustre_fd)
+{
+  dpl_dict_var_t	*dict_cl;
+  dpl_value_t		*val;
+  dpl_sbuf_t		*sbuf;
+  char			*buff = NULL;
+  ssize_t		xattr_size = -1;
+  int			ret = 0;
+
+  dict_cl = dpl_dict_get(dict_var, XATTR_LUSTRE_LOV);
+  val = dict_cl->val;
+  sbuf = val->string;
+  buff = sbuf->buf;
+  xattr_size = sbuf->len;
+
+  if (buff == NULL || xattr_size < 0)
+    {
+      CT_ERROR(-EINVAL, "Couldn't restore XATTR from dpl_dict_get_value.");
+      ret = -EINVAL;
+      return (ret);
+    }
+
+  fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff, xattr_size, XATTR_CREATE); /**< setting attr to the file's fd */
+
+  return (ret);
 }
 
-/*
- * - Function archive_data, restore_data and remove data.
- * - Function archive_data will read from a file descriptor,
- * bufferize the data and use dpl_put_id to store it on the
- * ring using a UKS key generated from the lustre's FID.
- * - Function restore_data will use dpl_get_id with the same UKS
- * key used to store it on the ring to retrieve data
- * on a char * and then write it on the lustre's file descriptor
- * corresponding to the lustre data's location on the file system.
- * - Function remove_data will remove the data on the ring using
- * the same UKS key that was used to store it using dpl_delete_id,
- * be sure though that the file is not on a release state on Lustre.
+/**
+ * @brief Function will read from a file descriptor, bufferize the data
+ * and use dpl_put_id to store it on the ring using a UKS key generated
+ * from the Lustre FID.
+ *
+ * @param hai - hsm_action_item structure
+ * @param hal_flags - hsm_action_list flags
+ * @param ctx - dpl_ctx_t droplet structure
+ * @param BN - BIGNUM used as UKS key to store on the Ring
+ * @see uks_key_from_fid()
+ * @see restore_data()
+ * @see remove_data()
+ * @return Returns a negative value upon failure or 0 upon success.
  */
 
 static int
@@ -440,7 +521,7 @@ archive_data(const struct hsm_action_item *hai,
   dpl_status_t			dpl_ret;
   dpl_dict_t			*dict_var;
 
-  ret2 = cpt_begin(&hcp, hai, -1, 0);
+  ret2 = cpt_begin(&hcp, hai, -1, 0); //**< notifying coordinator of start */
   if (ret2 < 0)
     goto end;
 
@@ -448,7 +529,7 @@ archive_data(const struct hsm_action_item *hai,
 
   CT_TRACE("Archiving '%s' to the ring.", src);
 
-  src_fd = llapi_hsm_action_get_fd(hcp);
+  src_fd = llapi_hsm_action_get_fd(hcp); /**< llapi function that gets the file's fd */
   if (src_fd < 0)
     {
       ret = src_fd;
@@ -462,7 +543,7 @@ archive_data(const struct hsm_action_item *hai,
       CT_ERROR(ret, "Couldn't stat '%s' for operation archive data.", src);
       goto end;
     }
-  if (!S_ISREG(src_st.st_mode))
+  if (!S_ISREG(src_st.st_mode)) /**< if not a regular file, do not treat */
     {
       ret = -EINVAL;
       CT_ERROR(ret, "'%s' is not a regular file.", src);
@@ -479,7 +560,7 @@ archive_data(const struct hsm_action_item *hai,
 
   DPRINTF("BN_bn2hex done successfully for operation archive data.\n");
 
-  buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0);
+  buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0); /**< mmaping the data */
   if (buff_data == MAP_FAILED)
     {
       DPRINTF("mmap failed with %s.\n", strerror(errno));
@@ -487,13 +568,14 @@ archive_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  if (!(dict_var = archive_attr(src_fd, src)))
+  if (!(dict_var = archive_attr(src_fd, src))) /**< retrieving the attr */
     {
       ret = -1;
       goto end;
     }
 
-  dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, dict_var, NULL, buff_data, src_st.st_size);
+  dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL,
+		       NULL, dict_var, NULL, buff_data, src_st.st_size); /**< archiving the data and the attr on the Ring*/
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -errno;
@@ -515,7 +597,7 @@ archive_data(const struct hsm_action_item *hai,
 	CT_ERROR(ret2, "Munmap failed on operation archive data.");
     }
 
-  ret2 = cpt_fini(&hcp, hai, 0, ret);
+  ret2 = cpt_end(&hcp, hai, 0, ret); /**< notify coordinator end */
   DPRINTF("Coordinator successfully notified for action archive.\n");
   ret = ret2;
 
@@ -534,6 +616,21 @@ archive_data(const struct hsm_action_item *hai,
   DPRINTF("Archive operation successfully ended.\n");
   return (ret);
 }
+
+/**
+ * @brief Function will use dpl_get_id with the same generated UKS key
+ * that the one used to archive it, to retrieve bufferized data
+ * and write it on the Lustre's data adress using its fd.
+ *
+ * @param hai - hsm_action_item structure
+ * @param hal_flags - hsm_action_list flags
+ * @param ctx - dpl_ctx_t droplet structure
+ * @param BN - BIGNUM used as UKS key to restore on the Ring
+ * @see uks_key_from_fid()
+ * @see archive_data()
+ * @see remove_data()
+ * @return Returns a negative value upon failure or 0 upon success.
+ */
 
 static int
 restore_data(const struct hsm_action_item *hai,
@@ -572,7 +669,7 @@ restore_data(const struct hsm_action_item *hai,
 
   DPRINTF("Using BNHEX = %s.\n", BNHEX);
 
-  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL);
+  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL); /**< retrieve the data and attr from the Ring*/
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -EINVAL;
@@ -589,12 +686,10 @@ restore_data(const struct hsm_action_item *hai,
     }
   else
     {
-      //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?)
-      set_lovea = true;
-      buff_attr = restore_attr(dict_var);
+      //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?) /**< obsolete flags macro */
     }
 
-  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0)
+  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0) /**< llapi function to get index */
     {
       CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
       ret = ret2;
@@ -602,7 +697,7 @@ restore_data(const struct hsm_action_item *hai,
     }
   DPRINTF("Mdt index retrieved for operation restore data.\n");
 
-  ret2 = cpt_begin(&hcp, hai, mdt_index, open_flags);
+  ret2 = cpt_begin(&hcp, hai, mdt_index, open_flags); /**< notifying coordinator of start */
   if (ret2 < 0)
     goto end;
   DPRINTF("Ct begin successfull.\n");
@@ -617,7 +712,7 @@ restore_data(const struct hsm_action_item *hai,
   snprintf(lpath, sizeof(lpath), "{VOLATILE}="DFID, PFID(&dfid));
   CT_TRACE("Restoring file from ring to '%s'", lpath);
 
-  if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0)
+  if ((lustre_fd = llapi_hsm_action_get_fd(hcp)) < 0) /**< llapi function to get file's fd */
     {
       ret = -1;
       CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.");
@@ -630,7 +725,7 @@ restore_data(const struct hsm_action_item *hai,
   //FIXME attr buffer returns NULL from recovery at dpl_get_id -> is attr well set?
   if (set_lovea)
     {
-      ret2 = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff_attr, XATTR_SIZE_MAX, XATTR_CREATE);
+      ret2 = restore_attr(dict_var, lustre_fd); /**< get the attr from the dpl_dict_t */ //FIXME check
       if (ret2 < 0)
 	{
 	  CT_ERROR(ret, "Cannot set ATTR properly for action restore.");
@@ -644,7 +739,7 @@ restore_data(const struct hsm_action_item *hai,
 
   //offset = hai->hai_extent.length; -> Range implementation to be fixed.
 
-  ret2 = write(lustre_fd, buff_data, lenp);
+  ret2 = write(lustre_fd, buff_data, lenp); /**< writting data on the Lustre file's fd */
   if (ret2 < 0)
     {
       CT_ERROR(ret, "Couldn't properly write on Lustre's fd for action restore.");
@@ -657,7 +752,7 @@ restore_data(const struct hsm_action_item *hai,
 
  end:
 
-  ret2 = cpt_fini(&hcp, hai, 0, ret);
+  ret2 = cpt_end(&hcp, hai, 0, ret); /**< notifying coordinator of end */
   DPRINTF("Coordinator successfully notified for action restore.\n");
   ret = ret2;
 
@@ -669,6 +764,21 @@ restore_data(const struct hsm_action_item *hai,
 
   return (ret);
 }
+
+/**
+ * @brief Function use dpl_delete_id with the same generated UKS key
+ * that was used to archive it in order to delete the data on the
+ * Ring.
+ *
+ * @param hai - hsm_action_item structure
+ * @param hal_flags - hsm_action_list flags
+ * @param ctx - dpl_ctx_t droplet structure
+ * @param BN - BIGNUM used as UKS key to remove from the Ring
+ * @see uks_key_from_fid()
+ * @see archive_data()
+ * @see restore_data()
+ * @return Returns a negative value upon failure or 0 upon success.
+ */
 
 static int
 remove_data(const struct hsm_action_item *hai,
@@ -683,7 +793,7 @@ remove_data(const struct hsm_action_item *hai,
   dpl_status_t			dpl_ret;
   int				ret, ret2;
 
-  ret2 = cpt_begin(&hcp, hai, -1, 0);
+  ret2 = cpt_begin(&hcp, hai, -1, 0); /**< notifying coordinator of start */
   if (ret2 < 0)
     goto end;
  
@@ -693,7 +803,7 @@ remove_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL);
+  dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL); /**< removing data from the Ring */
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -EINVAL;
@@ -713,7 +823,7 @@ remove_data(const struct hsm_action_item *hai,
   
  end:
 
-  ret2 = cpt_fini(&hcp, hai, 0, ret);
+  ret2 = cpt_end(&hcp, hai, 0, ret); /**< notifying coordinator of end */
   CT_TRACE("Coordinator notified properly.");
   ret = ret2;
 
@@ -723,10 +833,19 @@ remove_data(const struct hsm_action_item *hai,
   return ret;
 }
 
-/*
- * Function process_action will use hai structure to interpret commands given
+/**
+ * @brief Function that will use hai structure to interpret commands given
  * to the copytool, if it's either archive, restore or remove on the hai->hai_action.
  * Hai stands for HSM Action Item, wich is part of a list (hal).
+ *
+ * @param hai - hsm_action_item structure
+ * @param hal_flags - hsm_action_list flags
+ * @param ctx - dpl_ctx_t droplet structure
+ * @param BN - BIGNUM used as UKS key to archive, restore, remove
+ * @see archive_data()
+ * @see restore_data()
+ * @see remove_data()
+ * @return Returns 0 upon success and a negative value upon failure.
  */
 
 static int
@@ -773,19 +892,25 @@ process_action(const struct hsm_action_item *hai,
       ret = -EINVAL;
       CT_ERROR(ret, "Unknown action %d, on %s.",
 	       hai->hai_action, cpt_opt.lustre_mp);
-      ret2 = cpt_fini(NULL, hai, 0, ret);
+      ret2 = cpt_end(NULL, hai, 0, ret);
       ret = ret2;
     }
   return (ret);
 }
 
-/*
- * Function uks_key_from_fid will use the fid provided by Lustre in
+/**
+ * @brief Function that will use the fid provided by Lustre in
  * order to generate a UKS key used to locate the data on the Ring
  * for actions archive, restore and remove.
  * The UKS key will be calculated from the fid using the following
  * pattern :
- * hash [24 md5(total) ^ 8 f_ver lsb] / oid [f_seq] / volid [f_oid] / srv [] / spec [f_ver 24 msb]
+ * # hash [24 md5(total) ^ 8 f_ver lsb] / oid [f_seq] / volid [f_oid] / srv[NULL] / spec [f_ver 24 msb]
+ *
+ * @param f_seq - fid sequence
+ * @param f_oid - fid oid
+ * @param f_ver - fid version
+ * @see cpt_run()
+ * @return Returns NULL upon failure and a BIGNUM upon success.
  */
 
 BIGNUM *
@@ -809,12 +934,6 @@ uks_key_from_fid(int64_t f_seq,
   return (BN);
 }
 
-/*
- * Functions cpt_thread and process_async are functions that will
- * use multi-threading to treat each action separately in a competitive
- * way.
- */
-
 struct ct_th_data
 {
   long				hal_flags;
@@ -822,6 +941,15 @@ struct ct_th_data
   dpl_ctx_t			*ctx;
   const BIGNUM			*BN;
 };
+
+/**
+ * @brief Multi-threading function.
+ *
+ * @param data - ct_th_data structure containing hai, ctx and BN
+ * @see process_async()
+ * @see process_action()
+ * @return No return variable.
+ */
 
 static void *
 cpt_thread(void *data)
@@ -836,6 +964,19 @@ cpt_thread(void *data)
   free(cttd);
   pthread_exit((void *)(intptr_t)ret);
 }
+
+/**
+ * @brief Function that will launch each command on a competitive way using
+ * multi-threading.
+ *
+ * @param hai - hsm_action_item structure
+ * @param hal_flags - hsm_action_list flags
+ * @param ctx - dpl_ctx_t droplet structure
+ * @param BN - BIGNUM used as UKS key to archive, restore, remove
+ * @see cpt_run()
+ * @see cpt_thread()
+ * @return Returns 0 upon success and negative error value upon failure.
+ */
 
 static int
 process_async(const struct hsm_action_item *hai,
@@ -880,11 +1021,16 @@ process_async(const struct hsm_action_item *hai,
   return (0);
 }
 
-/*
- * Function cpt_run contains the loop that will allow us to wait
+/**
+ * @brief Function that contains the loop that will allow to wait
  * for instructions from the copytool.
  * It will handle signals SIGINT and SIGTERM.
  * Action list is handled by structure hal wich stands for HSM Action List.
+ *
+ * @param ctx - dpl_ctx_t droplet structure
+ * @see uks_key_from_fid()
+ * @see process_async()
+ * @return Returns negative error value upon failure.
  */
 
 static int
@@ -894,7 +1040,7 @@ cpt_run(dpl_ctx_t *ctx)
 
   ret = llapi_hsm_copytool_register(&cpt_data, cpt_opt.lustre_mp,
 				    cpt_opt.arch_ind_count,
-				    cpt_opt.arch_ind, 0);
+				    cpt_opt.arch_ind, 0); /**< starting copytool on coordinator*/
   if (ret < 0)
     {
       CT_ERROR(ret, "Cannot start copytool interface.");
@@ -913,7 +1059,7 @@ cpt_run(dpl_ctx_t *ctx)
 
       CT_TRACE("Waiting for message from kernel.");
 
-      ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size);
+      ret = llapi_hsm_copytool_recv(cpt_data, &hal, &msg_size); /**< retrieving hal */
       if (ret == -ESHUTDOWN)
 	{
 	  CT_TRACE("Shutting down.");
@@ -936,9 +1082,9 @@ cpt_run(dpl_ctx_t *ctx)
 	  break;
 	}
 
-      hai = hai_first(hal);
+      hai = hai_first(hal); /**< setting first action item */
 
-      while (++i <= hal->hal_count)
+      while (++i <= hal->hal_count) /**< while we still have items to treat*/
 	{
 	  char			*tmp;
 
@@ -951,19 +1097,22 @@ cpt_run(dpl_ctx_t *ctx)
 
 	  OPENSSL_free(tmp);
 
-	  process_async(hai, hal->hal_flags, ctx, BN);
+	  process_async(hai, hal->hal_flags, ctx, BN); /**< @see cpt_thread() */
 
-	  hai = hai_next(hai);
+	  hai = hai_next(hai); /**< going to next item*/
 	}
     }
   llapi_hsm_copytool_unregister(&cpt_data);
   return (ret);
 }
 
-/*
- * Function cpt_setup is used to check FS Lustre exists and is
+/**
+ * @brief Function is used to check FS Lustre exists and is
  * correctly mounted. It will also open a file descriptor on the
  * Lustre mount point.
+ *
+ * @see main()
+ * @return Returns 0 upon success or negative error value upon failure.
  */
 
 static int
@@ -973,14 +1122,14 @@ cpt_setup()
 
   arch_fd = -1;
 
-  ret = llapi_search_fsname(cpt_opt.lustre_mp, fs_name);
+  ret = llapi_search_fsname(cpt_opt.lustre_mp, fs_name); /**< getting fs name mounted*/
   if (ret < 0)
     {
       CT_ERROR(ret, "Cannot find a Lustre FS mounted at '%s'.",
 	       cpt_opt.lustre_mp);
       return (ret);
     }
-  if ((cpt_opt.lustre_mp_fd = open(cpt_opt.lustre_mp, O_RDONLY)) < 0)
+  if ((cpt_opt.lustre_mp_fd = open(cpt_opt.lustre_mp, O_RDONLY)) < 0) /**< opening fd on the fs mount point */
     {
       ret = -errno;
       CT_ERROR(ret, "Cannot open mount point at '%s'.",
@@ -990,9 +1139,15 @@ cpt_setup()
   return (ret);
 }
 
-/*
-** Main function.
-*/
+/**
+ * @brief Main function.
+ *
+ * @see get_opt()
+ * @see daemonize()
+ * @see cpt_setup()
+ * @see cpt_run()
+ * @return Returns a negative value upon failure
+ */
 
 int
 main(int ac,
