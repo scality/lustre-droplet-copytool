@@ -479,7 +479,14 @@ restore_attr (dpl_dict_t *dict_var, int lustre_fd)
       return (ret);
     }
 
-  fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff, xattr_size, XATTR_CREATE); /**< setting attr to the file's fd */
+  ret = fsetxattr(lustre_fd, XATTR_LUSTRE_LOV, buff, xattr_size, XATTR_CREATE); /**< setting attr to the file's fd */
+  if (ret < 0)
+    {
+      CT_ERROR(ret, "Fsetxattr failed.");
+      return (ret);
+    }
+  else
+    CT_TRACE("Fsetxattr succeded for action restore attr.");
 
   return (ret);
 }
@@ -563,8 +570,8 @@ archive_data(const struct hsm_action_item *hai,
   buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0); /**< mmaping the data */
   if (buff_data == MAP_FAILED)
     {
-      DPRINTF("mmap failed with %s.\n", strerror(errno));
       ret = errno;
+      CT_ERROR(ret, "mmap failed with %s.\n", strerror(errno));
       goto end;
     }
 
@@ -677,7 +684,7 @@ restore_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  DPRINTF("Dpl_get_id done successfully for operation restore data, retrieved : %s", buff_data);
+  CT_TRACE("Dpl_get_id done successfully for operation restore data, retrieved : %s", buff_data);
 
   if (!dict_var)
     {
