@@ -415,17 +415,17 @@ archive_attr(int src_fd,
   int			ret;
 
   dict_var = dpl_dict_new(DPL_DICT_NB);
-  DPRINTF("Saving attr.\n");
+  DPRINTF("Commencing action saving xattr.\n");
   xattr_size = fgetxattr(src_fd, XATTR_LUSTRE_LOV, lov_buff,
 			 sizeof(lov_buff));
   if (xattr_size < 0)
     {
       ret = -EINVAL;
-      CT_ERROR(ret, "Cannot get attr info on '%s'", src);
+      CT_ERROR(ret, "Cannot get xattr info on '%s'", src);
       return (NULL);
   }
 
-  DPRINTF("Archiving attr %s.\n", lov_buff);
+  DPRINTF("Archiving xattr %s.\n", lov_buff);
 
   lum = (void *)lov_buff;
 
@@ -459,14 +459,19 @@ archive_attr(int src_fd,
 int
 restore_attr (dpl_dict_t *dict_var, int lustre_fd)
 {
-  dpl_dict_var_t	*dict_cl;
-  dpl_value_t		*val;
-  dpl_sbuf_t		*sbuf;
+  dpl_dict_var_t	*dict_cl = NULL;
+  dpl_value_t		*val = NULL;
+  dpl_sbuf_t		*sbuf = NULL;
   char			*buff = NULL;
   ssize_t		xattr_size = -1;
   int			ret = 0;
 
   dict_cl = dpl_dict_get(dict_var, XATTR_LUSTRE_LOV);
+  if (dict_cl == NULL)
+    {
+      DPRINTF("dpl_dict_get failed to retrieve xattr.\n");
+      return (-1);
+    }
   val = dict_cl->val;
   sbuf = val->string;
   buff = sbuf->buf;
@@ -474,7 +479,7 @@ restore_attr (dpl_dict_t *dict_var, int lustre_fd)
 
   if (buff == NULL || xattr_size < 0)
     {
-      CT_ERROR(-EINVAL, "Couldn't restore XATTR from dpl_dict_get_value.");
+      CT_ERROR(-EINVAL, "Couldn't restore xattr from dpl_dict_get_value.");
       ret = -EINVAL;
       return (ret);
     }
@@ -512,7 +517,7 @@ archive_data(const struct hsm_action_item *hai,
 	     dpl_ctx_t *ctx,
 	     const BIGNUM *BN)
 {
-  char				*buff_data = MAP_FAILED;
+  char				*buff_data = NULL;
   size_t			buff_len = 0;
   int				ret, ret2;
   struct hsm_copyaction_private	*hcp = NULL;
@@ -567,12 +572,22 @@ archive_data(const struct hsm_action_item *hai,
 
   DPRINTF("BN_bn2hex done successfully for operation archive data.\n");
 
-  buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0); /**< mmaping the data */
-  if (buff_data == MAP_FAILED)
+  if (src_st.st_size > 0)
     {
-      ret = errno;
-      CT_ERROR(ret, "mmap failed with %s.\n", strerror(errno));
-      goto end;
+      buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0); /**< mmaping the data */
+      if (buff_data == MAP_FAILED)
+	{
+	  ret = errno;
+	  CT_ERROR(ret, "Either mmap failed with '%s'.\n", strerror(errno));
+	  goto end;
+	}
+    }
+
+  if (src_st.st_size <= 0) /**< If there is no data, the file will still be archived with only the xattrs */
+    {
+      CT_TRACE("The specified file has no data. Only xattrs will be archived on the Ring.\n"
+	       "If your file was supposed to contain data, please remove from the Ring and "
+	       "ensure yourself that the file is not corrupted in any ways.\n");
     }
 
   if (!(dict_var = archive_attr(src_fd, src))) /**< retrieving the attr */
@@ -586,7 +601,7 @@ archive_data(const struct hsm_action_item *hai,
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -errno;
-      CT_ERROR(ret, "DPL_PUT_ID failed for operation archive data = %s.", dpl_status_str(dpl_ret));
+      CT_ERROR(ret, "DPL_PUT_ID failed for operation archive data = '%s'.", dpl_status_str(dpl_ret));
       ret = -1;
       goto end;
     }
@@ -597,7 +612,7 @@ archive_data(const struct hsm_action_item *hai,
 
  end:
 
-  if (buff_data != MAP_FAILED)
+  if (buff_data != MAP_FAILED && buff_data != NULL)
     {
       ret2 = munmap(buff_data, buff_len);
       if (ret2 < 0)
@@ -694,6 +709,7 @@ restore_data(const struct hsm_action_item *hai,
   else
     {
       //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?) /**< obsolete flags macro */
+      set_lovea = true;
     }
 
   if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0) /**< llapi function to get index */
