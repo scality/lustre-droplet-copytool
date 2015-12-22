@@ -4,7 +4,7 @@ CFLAGS		+= -O2 -Wno-unused-parameter -Wno-sign-compare
 
 DFLAGS		:= -g3
 
-LDFLAGS		+= -lpthread -lbsd -L/usr/local/lib/ -ldroplet
+LDFLAGS		+= -lpthread -lbsd -L/usr/local/lib/ -ldroplet -L/usr/lib64/ -llustreapi
 
 RM              := rm -f
 
@@ -29,24 +29,12 @@ MSGS_P		:= $(SRCS_P)msgs/
 OBJS_P		:= $(SRCS_P)objs/
 
 SRCS		:= $(SRCS_P)main.c\
-		   $(SRCS_P)liblustreapi.c\
-		   $(SRCS_P)liblustreapi_hsm.c\
-		   $(SRCS_P)liblustreapi_json.c\
-		   $(SRCS_P)liblustreapi_kernelconn.c\
 		   $(MSGS_P)usage.c
 
 TMP		:= main.o\
-		   liblustreapi.o\
-		   liblustreapi_hsm.o\
-		   liblustreapi_json.o\
-		   liblustreapi_kernelconn.o\
 		   usage.o
 
 OBJS            := $(OBJS_P)main.o\
-		   $(OBJS_P)liblustreapi.o\
-		   $(OBJS_P)liblustreapi_hsm.o\
-		   $(OBJS_P)liblustreapi_json.o\
-		   $(OBJS_P)liblustreapi_kernelconn.o\
 		   $(OBJS_P)usage.o
 
 all: 		$(NAME)
