@@ -43,6 +43,21 @@ not.
 In term of performances, puts and gets can be done with multi-threading and therefore
 a big sized data would be stored and recovered more efficiently, theorically speaking.
 
+Another idea, would be to generate UKS keys using different FIDs and therefore get
+rid of the collisions problems.
+So blocking the FIDs on the lustre using "phantom files" and allocating UKS keys to
+the different parts of a stripped file.
+
+    file ----> data *--------> key ---> metadata / key database
+                                                 |
+    phantom file#1  --------- FID -------------->*---> UKS key from FID#1 ---> stripe#1
+    phantom file#2  --------- FID -------------->|---> UKS key from FID#2 ---> stripe#2
+    phantom file#3  --------- FID -------------->|---> UKS key from FID#3 ---> stripe#3
+    phantom file#4  --------- FID -------------->|---> UKS key from FID#4 ---> stripe#4
+    phantom file#5  --------- FID -------------->|---> UKS key from FID#5 ---> stripe#5
+                                                 |
+    phantom file#n  --------- FID -------------->*---> UKS key from FID#n ---> stripe#n
+
 b. We know that the Robinhood is Lustre related only and does not interact in any way
 with the Ring.
 It uses set up flags on files to determine whether it's new, archived, released, or

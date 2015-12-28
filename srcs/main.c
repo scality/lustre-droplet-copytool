@@ -4,9 +4,6 @@
  * @date 2015
  * @brief .c containing the lustre-droplet-copytool code.
  *
- * Here typically goes a more extensive explanation of what the header
- * defines. Doxygens tags are words preceeded by either a backslash @\
- * or by an at symbol @@.
  */
 
 #ifndef _GNU_SOURCE
@@ -533,7 +530,7 @@ archive_data(const struct hsm_action_item *hai,
   dpl_status_t			dpl_ret;
   dpl_dict_t			*dict_var;
 
-  ret2 = cpt_begin(&hcp, hai, -1, 0); //**< notifying coordinator of start */
+  ret2 = cpt_begin(&hcp, hai, -1, 0); /**< notifying coordinator of start */
   if (ret2 < 0)
     goto end;
 
@@ -745,13 +742,12 @@ restore_data(const struct hsm_action_item *hai,
 
   //FIXME Range to be implemented for large size data with offset(?).
 
-  //FIXME attr buffer returns NULL from recovery at dpl_get_id -> is attr well set?
   if (set_lovea)
     {
       ret2 = restore_attr(dict_var, lustre_fd); /**< get the attr from the dpl_dict_t */ //FIXME check
       if (ret2 < 0)
 	{
-	  CT_ERROR(ret, "Cannot set ATTR properly for action restore.");
+	  CT_ERROR(ret2, "Cannot set ATTR properly for action restore.");
 	  DPRINTF("Error : %s.\n", strerror(errno));
 	  ret = ret2;
 	  //goto end;
