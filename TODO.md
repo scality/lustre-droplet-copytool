@@ -58,6 +58,21 @@ the different parts of a stripped file.
                                                  |
     phantom file#n  --------- FID -------------->*---> UKS key from FID#n ---> stripe#n
 
+Another idea that came up was to use a database linked to one key that would contain
+several UKS keys referring to #n files.
+
+    file#1 ----> data *                                                    *--> file#1's stripe#1
+                      |-------> key ---> database -> file's 1 & 2 UKS keys |--> file#1's stripe#n
+    file#2 ----> data *                                                    |--> file#2's stripe#1
+                                                                           *--> file#2's stripe#n
+
+After discussing that matter with David it appears that MESA and sparse files were a similar
+solution but not quite optimized. Still writting it down here if ever it came to be a part of or
+a solution.
+
+    file ----> MESA mainchunk
+
+
 b. We know that the Robinhood is Lustre related only and does not interact in any way
 with the Ring.
 It uses set up flags on files to determine whether it's new, archived, released, or
