@@ -12,7 +12,7 @@ A copytool for the Lustre HSM to tier the data towards Scality's storage system.
 
 First, we will be Installing Lustre on a device and Installing the Ring on another one.
 
-Once it's done, and once we've activated an agent, we will Install the SOFS Connector on CentOS or RedHat
+Once it's done, and once we've activated an agent, we will Install the Sproxyd Connector on CentOS or RedHat
 on the agent's node.
 
 The Robinhood guide can be found here : https://github.com/cea-hpc/robinhood/wiki/tmpfs_admin_guide
