@@ -112,7 +112,7 @@ struct		s_opt
 
 #define CT_ERROR(_rc, _format, ...)					\
 	llapi_error(LLAPI_MSG_ERROR, _rc,				\
-		    "%f %s[%ld]: "_format,				\
+		    "%f %s[%ld]: "#_format,				\
 		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
 #define CT_DEBUG(_format, ...)						\
@@ -127,7 +127,7 @@ struct		s_opt
 
 #define CT_TRACE(_format, ...)						\
 	llapi_error(LLAPI_MSG_INFO | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "_format,				\
+		    "%f %s[%ld]: "#_format,				\
 		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
 /**

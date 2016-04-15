@@ -4,7 +4,7 @@ CFLAGS		+= -O2 -Wno-unused-parameter -Wno-sign-compare
 
 DFLAGS		:= -g3
 
-LDFLAGS		+= -lpthread -lbsd -L/usr/local/lib/ -ldroplet -L/usr/lib64/ -llustreapi
+LDFLAGS		+= -lpthread -lbsd -L/usr/local/lib/ -ldroplet -L/lib64/ -lcrypto -llustreapi
 
 RM              := rm -rf
 
