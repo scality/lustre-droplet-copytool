@@ -8,9 +8,9 @@ LDFLAGS		+= -lpthread -lbsd -L/usr/local/lib/ -ldroplet -L/lib64/ -lcrypto -llus
 
 RM              := rm -rf
 
-NAME            := copytool
+NAME            := lhsmtool_scality
 
-DEBUG		:= copytool_d
+DEBUG		:= lhsmtool_scality_debug
 
 LIB_NAME        := my
 
@@ -26,22 +26,18 @@ MSGS_P		:= $(SRCS_P)msgs/
 
 OBJS_P		:= $(SRCS_P)objs/
 
-SRCS		:= $(SRCS_P)main.c\
+SRCS		:= $(SRCS_P)lhsmtool_scality.c\
 		   $(MSGS_P)usage.c
 
-TMP		:= main.o\
+TMP		:= lhsmtool_scality.o\
 		   usage.o
 
-OBJS            := $(OBJS_P)main.o\
+OBJS            := $(OBJS_P)lhsmtool_scality.o\
 		   $(OBJS_P)usage.o
 
 all: 		$(NAME)
 
 $(NAME):
-		@if [ -d "./lustre-stable" ]; then \
-		echo "lustre-stable exists, not git cloning repository."; else \
-		git clone https://github.com/Xyratex/lustre-stable; \
-		fi
 		$(CC) -c $(SRCS) $(CFLAGS) -I$(HEADER_PATH) -I$(LUSTRE_STABLE)lustre/include -I$(LUSTRE_STABLE)lnet/include -I$(LUSTRE_STABLE)lustre/utils -I$(LUSTRE_STABLE)libcfs/include -I/usr/local/include/droplet-3.0 -DLUSTRE_UTILS -DCONFIG_LUSTRE_OBD_MAX_IOCTL_BUFFER=8192 -D_GNU_SOURCE
 		@mv $(TMP) $(OBJS_P)
 		$(CC) -o $(NAME) $(OBJS) $(LDFLAGS)
@@ -49,10 +45,6 @@ $(NAME):
 debug:		$(DEBUG)
 
 $(DEBUG):
-		@if [ -d "./lustre-stable" ]; then \
-		echo "lustre-stable exists, not git cloning repository."; else \
-		git clone https://github.com/Xyratex/lustre-stable; \
-		fi
 		$(CC) -c $(SRCS) $(DFLAGS) $(CFLAGS) -I$(HEADER_PATH) -I$(LUSTRE_STABLE)lustre/include -I$(LUSTRE_STABLE)lnet/include -I$(LUSTRE_STABLE)lustre/utils -I$(LUSTRE_STABLE)libcfs/include -I/usr/local/include/droplet-3.0 -DLUSTRE_UTILS -DCONFIG_LUSTRE_OBD_MAX_IOCTL_BUFFER=8192 -D_GNU_SOURCE
 		@mv $(TMP) $(OBJS_P)
 		$(CC) -o $(DEBUG) $(OBJS) $(LDFLAGS)

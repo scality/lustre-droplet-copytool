@@ -1,4 +1,4 @@
-/**
+ /**
  * @file README.md
  * @author Olivier Conan
  * @date 2015
@@ -9,6 +9,10 @@
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE
 #endif
+
+#define	LPF64 "ll"
+#define	LPX64 "%#"LPF64"x"
+
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/xattr.h>
@@ -29,9 +33,10 @@
 #include "cpt_opt.h"
 #include "cpt_msgs.h"
 #include <lustre/lustreapi.h>
-#include <lustre/lustre_idl.h>
+#include <lustre/lustre_user.h>
 #include <openssl/bn.h>
 #include <droplet.h>
+#include <droplet/uks/uks.h>
 
 //#define NDEBUG
 
@@ -73,7 +78,7 @@ struct options
 	int			 o_verbose;
 	int			 o_copy_xattrs;
 	int			 o_archive_cnt;
-	int			 o_archive_id[LL_HSM_MAX_ARCHIVE];
+  //int			 o_archive_id[LL_HSM_MAX_ARCHIVE];
 	int			 o_report_int;
 	unsigned long long	 o_bandwidth;
 	size_t			 o_chunk_size;
@@ -117,12 +122,12 @@ struct		s_opt
 
 #define CT_DEBUG(_format, ...)						\
 	llapi_error(LLAPI_MSG_DEBUG | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "_format,				\
+		    "%f %s[%ld]: "#_format,				\
 		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
 #define CT_WARN(_format, ...) \
 	llapi_error(LLAPI_MSG_WARN | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "_format,				\
+		    "%f %s[%ld]: "#_format,				\
 		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
 
 #define CT_TRACE(_format, ...)						\
@@ -522,10 +527,10 @@ archive_data(const struct hsm_action_item *hai,
   struct stat			src_st;
   int				src_fd = -1;
   int				rcf = 0;
-  char				*BNHEX = NULL;
+  char				BNHEX[DPL_UKS_BCH_LEN + 1];
   int				ct_rc = 0;
   dpl_option_t			dpl_opts = {
-    .mask = DPL_OPTION_CONSISTENT,
+    .mask = 0, //DPL_OPTION_CONSISTENT,
   };
   dpl_status_t			dpl_ret;
   dpl_dict_t			*dict_var;
@@ -561,7 +566,8 @@ archive_data(const struct hsm_action_item *hai,
 
   buff_len = src_st.st_size;
 
-  if (!(BNHEX = BN_bn2hex(BN)))
+  ret = dpl_uks_bn2hex(BN, BNHEX);
+  if (re != DPL_SUCCESS)
     {
       ret = -ENOMEM;
       goto end;
@@ -671,7 +677,7 @@ restore_data(const struct hsm_action_item *hai,
 
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
-    .mask = DPL_OPTION_CONSISTENT,
+    .mask = 0, //DPL_OPTION_CONSISTENT,
   };
   unsigned int			lenp;
   char				*buff_attr = NULL;
@@ -680,7 +686,8 @@ restore_data(const struct hsm_action_item *hai,
   int				ret, ret2;
   struct lu_fid			dfid;
 
-  if (!(BNHEX = BN_bn2hex(BN)))
+  ret = dpl_uks_bn2hex(BN, BNHEX);
+  if (ret != DPL_SUCCESS)
     {
       ret = -ENOMEM;
       goto end;
@@ -709,7 +716,7 @@ restore_data(const struct hsm_action_item *hai,
       set_lovea = true;
     }
 
-  if ((ret2 = llapi_get_mdt_index_by_fid(cpt_opt.lustre_mp_fd, &hai->hai_fid, &mdt_index)) < 0) /**< llapi function to get index */
+  if ((ret2 = llapi_file_fget_mdtidx(cpt_opt.lustre_mp_fd, &mdt_index)) < 0) /**< llapi function to get index */
     {
       CT_ERROR(ret, "Cannot get mdt index for operation restore data.");
       ret = ret2;
@@ -1120,7 +1127,9 @@ cpt_run(dpl_ctx_t *ctx)
 
 	  hai = hai_next(hai); /**< going to next item*/
 	}
+      llapi_hsm_action_list_free(&hal);
     }
+
   llapi_hsm_copytool_unregister(&cpt_data);
   return (ret);
 }
