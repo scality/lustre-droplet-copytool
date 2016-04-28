@@ -814,7 +814,7 @@ remove_data(const struct hsm_action_item *hai,
   char				*BNHEX = NULL;
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
-    .mask = DPL_OPTION_CONSISTENT,
+    .mask = 0, //DPL_OPTION_CONSISTENT,
   };
   dpl_status_t			dpl_ret;
   int				ret, ret2;
@@ -822,8 +822,9 @@ remove_data(const struct hsm_action_item *hai,
   ret2 = cpt_begin(&hcp, hai, -1, 0); /**< notifying coordinator of start */
   if (ret2 < 0)
     goto end;
- 
-  if (!(BNHEX = BN_bn2hex(BN)))
+
+  ret = dpl_uks_bn2hex(BN, BNHEX);
+  if (ret != DPL_SUCCESS)
     {
       ret = -ENOMEM;
       goto end;
