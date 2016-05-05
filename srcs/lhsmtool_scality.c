@@ -567,7 +567,7 @@ archive_data(const struct hsm_action_item *hai,
   buff_len = src_st.st_size;
 
   ret = dpl_uks_bn2hex(bn, bnhex);
-  if (re != DPL_SUCCESS)
+  if (ret != DPL_SUCCESS)
     {
       ret = -ENOMEM;
       goto end;
@@ -1128,7 +1128,7 @@ cpt_run(dpl_ctx_t *ctx)
 
 	  hai = hai_next(hai); /**< going to next item*/
 	}
-      llapi_hsm_action_list_free(&hal);
+      //llapi_hsm_action_list_free(&hal);
     }
 
   llapi_hsm_copytool_unregister(&cpt_data);
