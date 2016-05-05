@@ -517,7 +517,7 @@ static int
 archive_data(const struct hsm_action_item *hai,
 	     const long hal_flags,
 	     dpl_ctx_t *ctx,
-	     const BIGNUM *BN)
+	     const BIGNUM *bn)
 {
   char				*buff_data = NULL;
   size_t			buff_len = 0;
@@ -527,7 +527,7 @@ archive_data(const struct hsm_action_item *hai,
   struct stat			src_st;
   int				src_fd = -1;
   int				rcf = 0;
-  char				BNHEX[DPL_UKS_BCH_LEN + 1];
+  char				bnhex[DPL_UKS_BCH_LEN + 1];
   int				ct_rc = 0;
   dpl_option_t			dpl_opts = {
     .mask = 0, //DPL_OPTION_CONSISTENT,
@@ -566,7 +566,7 @@ archive_data(const struct hsm_action_item *hai,
 
   buff_len = src_st.st_size;
 
-  ret = dpl_uks_bn2hex(BN, BNHEX);
+  ret = dpl_uks_bn2hex(bn, bnhex);
   if (re != DPL_SUCCESS)
     {
       ret = -ENOMEM;
@@ -599,7 +599,7 @@ archive_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  dpl_ret = dpl_put_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL,
+  dpl_ret = dpl_put_id(ctx, NULL, bnhex, &dpl_opts, DPL_FTYPE_REG, NULL,
 		       NULL, dict_var, NULL, buff_data, src_st.st_size); /**< archiving the data and the attr on the Ring*/
   if (dpl_ret != DPL_SUCCESS)
     {
@@ -632,10 +632,10 @@ archive_data(const struct hsm_action_item *hai,
       close(src_fd);
     }
 
-  if (BNHEX)
+  if (bnhex)
     {
       DPRINTF("BNHEX for archive : Successfully free.\n");
-      OPENSSL_free(BNHEX);
+      OPENSSL_free(bnhex);
     }
 
   DPRINTF("Archive operation successfully ended.\n");
@@ -661,10 +661,10 @@ static int
 restore_data(const struct hsm_action_item *hai,
 	     const long hal_flags,
 	     dpl_ctx_t *ctx,
-	     const BIGNUM *BN)
+	     const BIGNUM *bn)
 {
   char				*buff_data = NULL;
-  char				*BNHEX = NULL;
+  char				*bnhex = NULL;
   char				lpath[PATH_MAX];
   __u64				offset;
   int				lustre_fd = -1;
@@ -686,16 +686,16 @@ restore_data(const struct hsm_action_item *hai,
   int				ret, ret2;
   struct lu_fid			dfid;
 
-  ret = dpl_uks_bn2hex(BN, BNHEX);
+  ret = dpl_uks_bn2hex(bn, bnhex);
   if (ret != DPL_SUCCESS)
     {
       ret = -ENOMEM;
       goto end;
     }
 
-  DPRINTF("Using BNHEX = %s.\n", BNHEX);
+  DPRINTF("Using BNHEX = %s.\n", bnhex);
 
-  dpl_ret = dpl_get_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL); /**< retrieve the data and attr from the Ring*/
+  dpl_ret = dpl_get_id(ctx, NULL, bnhex, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL); /**< retrieve the data and attr from the Ring*/
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -EINVAL;
@@ -785,8 +785,8 @@ restore_data(const struct hsm_action_item *hai,
   if (buff_data)
     free(buff_data);
 
-  if (BNHEX)
-    OPENSSL_free(BNHEX);
+  if (bnhex)
+    OPENSSL_free(bnhex);
 
   return (ret);
 }
@@ -810,8 +810,8 @@ static int
 remove_data(const struct hsm_action_item *hai,
 	    const long hal_flags,
 	    dpl_ctx_t *ctx,
-	    const BIGNUM *BN) {
-  char				*BNHEX = NULL;
+	    const BIGNUM *bn) {
+  char				*bnhex = NULL;
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
     .mask = 0, //DPL_OPTION_CONSISTENT,
@@ -823,14 +823,14 @@ remove_data(const struct hsm_action_item *hai,
   if (ret2 < 0)
     goto end;
 
-  ret = dpl_uks_bn2hex(BN, BNHEX);
+  ret = dpl_uks_bn2hex(bn, bnhex);
   if (ret != DPL_SUCCESS)
     {
       ret = -ENOMEM;
       goto end;
     }
 
-  dpl_ret = dpl_delete_id(ctx, NULL, BNHEX, &dpl_opts, DPL_FTYPE_REG, NULL); /**< removing data from the Ring */
+  dpl_ret = dpl_delete_id(ctx, NULL, bnhex, &dpl_opts, DPL_FTYPE_REG, NULL); /**< removing data from the Ring */
   if (dpl_ret != DPL_SUCCESS)
     {
       ret = -EINVAL;
@@ -854,8 +854,8 @@ remove_data(const struct hsm_action_item *hai,
   CT_TRACE("Coordinator notified properly.");
   ret = ret2;
 
-  if (BNHEX)
-    OPENSSL_free(BNHEX);
+  if (bnhex)
+    OPENSSL_free(bnhex);
   
   return ret;
 }
@@ -879,7 +879,7 @@ static int
 process_action(const struct hsm_action_item *hai,
 	       const long hal_flags,
 	       dpl_ctx_t *ctx,
-	       const BIGNUM *BN)
+	       const BIGNUM *bn)
 {
   int				ret, ret2;
   char				fid[128];
@@ -899,17 +899,17 @@ process_action(const struct hsm_action_item *hai,
     {
     case HSMA_ARCHIVE:
       CT_TRACE("Commencing archive action.");
-      if ((ret = archive_data(hai, hal_flags, ctx, BN)) < 0)
+      if ((ret = archive_data(hai, hal_flags, ctx, bn)) < 0)
 	CT_ERROR(ret, "Archive operation failed.");
       break;
     case HSMA_RESTORE:
       CT_TRACE("Commencing restore action.");
-      if ((ret = restore_data(hai, hal_flags, ctx, BN)) < 0)
+      if ((ret = restore_data(hai, hal_flags, ctx, bn)) < 0)
 	CT_ERROR(ret, "Restore operation failed.");
       break;
     case HSMA_REMOVE:
       CT_TRACE("Commencing remove action.");
-      if ((ret = remove_data(hai, hal_flags, ctx, BN)) < 0)
+      if ((ret = remove_data(hai, hal_flags, ctx, bn)) < 0)
 	CT_ERROR(ret, "Remove operation failed.");
       break;
     case HSMA_CANCEL:
@@ -947,18 +947,18 @@ uks_key_from_fid(int64_t f_seq,
 {
   uint32_t		BN_hash;
   int			ver_lsb;
-  BIGNUM		*BN;
+  BIGNUM		*bn;
 
-  if (!(BN = BN_new()))
+  if (!(bn = BN_new()))
     return (NULL);
-  BN_set_bit(BN, KEY_SIZE);
-  BN_clear_bit(BN, KEY_SIZE);
+  BN_set_bit(bn, KEY_SIZE);
+  BN_clear_bit(bn, KEY_SIZE);
   ver_lsb = f_ver & 0xFF;
-  dpl_uks_gen_key(BN, f_seq, f_oid, 0, (f_ver >> 8));
-  BN_hash = dpl_uks_hash_get(BN);
+  dpl_uks_gen_key(bn, f_seq, f_oid, 0, (f_ver >> 8));
+  BN_hash = dpl_uks_hash_get(bn);
   BN_hash ^= ver_lsb;
-  dpl_uks_hash_set(BN, BN_hash);
-  return (BN);
+  dpl_uks_hash_set(bn, BN_hash);
+  return (bn);
 }
 
 struct ct_th_data
@@ -966,7 +966,7 @@ struct ct_th_data
   long				hal_flags;
   struct hsm_action_item	*hai;
   dpl_ctx_t			*ctx;
-  const BIGNUM			*BN;
+  const BIGNUM			*bn;
 };
 
 /**
@@ -984,7 +984,7 @@ cpt_thread(void *data)
   struct ct_th_data	*cttd = data;
   int			ret;
 
-  ret = process_action(cttd->hai, cttd->hal_flags, cttd->ctx, cttd->BN);
+  ret = process_action(cttd->hai, cttd->hal_flags, cttd->ctx, cttd->bn);
 
   if (cttd->hai)
     free(cttd->hai);
@@ -1009,7 +1009,7 @@ static int
 process_async(const struct hsm_action_item *hai,
 		  long hal_flags,
 		  dpl_ctx_t *ctx,
-		  const BIGNUM *BN)
+		  const BIGNUM *bn)
 {
   pthread_attr_t	attr;
   pthread_t		thread;
@@ -1029,7 +1029,7 @@ process_async(const struct hsm_action_item *hai,
   memcpy(data->hai, hai, hai->hai_len);
   data->hal_flags = hal_flags;
   data->ctx = ctx;
-  data->BN = BN;
+  data->bn = bn;
 
   if ((ret = pthread_attr_init(&attr)) != 0)
     {
@@ -1080,7 +1080,7 @@ cpt_run(dpl_ctx_t *ctx)
     {
       struct hsm_action_list	*hal;
       struct hsm_action_item	*hai;
-      BIGNUM			*BN = NULL;
+      BIGNUM			*bn = NULL;
       int				msg_size;
       int				i = 0;
 
@@ -1115,16 +1115,16 @@ cpt_run(dpl_ctx_t *ctx)
 	{
 	  char			*tmp;
 
-	  if (!(BN = uks_key_from_fid(hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver)))
+	  if (!(bn = uks_key_from_fid(hai->hai_fid.f_seq, hai->hai_fid.f_oid, hai->hai_fid.f_ver)))
 	    return (-ENOMEM);
-	  tmp = BN_bn2hex(BN);
+	  tmp = BN_bn2hex(bn);
 
 	  DPRINTF("BIGNUM = %s\n", tmp);
 	  DPRINTF("Current action : %i\n", hai->hai_action);
 
 	  OPENSSL_free(tmp);
 
-	  process_async(hai, hal->hal_flags, ctx, BN); /**< @see cpt_thread() */
+	  process_async(hai, hal->hal_flags, ctx, bn); /**< @see cpt_thread() */
 
 	  hai = hai_next(hai); /**< going to next item*/
 	}
