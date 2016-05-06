@@ -78,7 +78,6 @@ struct options
 	int			 o_verbose;
 	int			 o_copy_xattrs;
 	int			 o_archive_cnt;
-  //int			 o_archive_id[LL_HSM_MAX_ARCHIVE];
 	int			 o_report_int;
 	unsigned long long	 o_bandwidth;
 	size_t			 o_chunk_size;
@@ -530,7 +529,7 @@ archive_data(const struct hsm_action_item *hai,
   char				bnhex[DPL_UKS_BCH_LEN + 1];
   int				ct_rc = 0;
   dpl_option_t			dpl_opts = {
-    .mask = 0, //DPL_OPTION_CONSISTENT,
+    .mask = 0,
   };
   dpl_status_t			dpl_ret;
   dpl_dict_t			*dict_var;
@@ -677,7 +676,7 @@ restore_data(const struct hsm_action_item *hai,
 
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
-    .mask = 0, //DPL_OPTION_CONSISTENT,
+    .mask = 0,
   };
   unsigned int			lenp;
   char				*buff_attr = NULL;
@@ -712,7 +711,6 @@ restore_data(const struct hsm_action_item *hai,
     }
   else
     {
-      //open_flags |= O_LOV_DELAY_CREATE;//-->obsolete(?) /**< obsolete flags macro */
       set_lovea = true;
     }
 
@@ -757,7 +755,6 @@ restore_data(const struct hsm_action_item *hai,
 	  CT_ERROR(ret2, "Cannot set ATTR properly for action restore.");
 	  DPRINTF("Error : %s.\n", strerror(errno));
 	  ret = ret2;
-	  //goto end;
 	}
       else
 	DPRINTF("ATTR were set properly for action restore.\n");
@@ -814,7 +811,7 @@ remove_data(const struct hsm_action_item *hai,
   char				*bnhex = NULL;
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
-    .mask = 0, //DPL_OPTION_CONSISTENT,
+    .mask = 0,
   };
   dpl_status_t			dpl_ret;
   int				ret, ret2;
