@@ -631,12 +631,6 @@ archive_data(const struct hsm_action_item *hai,
       close(src_fd);
     }
 
-  if (bnhex)
-    {
-      DPRINTF("BNHEX for archive : Successfully free.\n");
-      OPENSSL_free(bnhex);
-    }
-
   DPRINTF("Archive operation successfully ended.\n");
   return (ret);
 }
@@ -663,7 +657,7 @@ restore_data(const struct hsm_action_item *hai,
 	     const BIGNUM *bn)
 {
   char				*buff_data = NULL;
-  char				*bnhex = NULL;
+  char				bnhex[DPL_UKS_BCH_LEN + 1];
   char				lpath[PATH_MAX];
   __u64				offset;
   int				lustre_fd = -1;
@@ -782,9 +776,6 @@ restore_data(const struct hsm_action_item *hai,
   if (buff_data)
     free(buff_data);
 
-  if (bnhex)
-    OPENSSL_free(bnhex);
-
   return (ret);
 }
 
@@ -808,7 +799,7 @@ remove_data(const struct hsm_action_item *hai,
 	    const long hal_flags,
 	    dpl_ctx_t *ctx,
 	    const BIGNUM *bn) {
-  char				*bnhex = NULL;
+  char				bnhex[DPL_UKS_BCH_LEN + 1];
   struct hsm_copyaction_private	*hcp = NULL;
   dpl_option_t			dpl_opts = {
     .mask = 0,
@@ -850,9 +841,6 @@ remove_data(const struct hsm_action_item *hai,
   ret2 = cpt_end(&hcp, hai, 0, ret); /**< notifying coordinator of end */
   CT_TRACE("Coordinator notified properly.");
   ret = ret2;
-
-  if (bnhex)
-    OPENSSL_free(bnhex);
   
   return ret;
 }
