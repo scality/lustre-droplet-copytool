@@ -38,6 +38,8 @@
 #include <droplet.h>
 #include <droplet/uks/uks.h>
 
+#include "trace.h"
+
 //#define NDEBUG
 
 #ifdef NDEBUG
@@ -114,25 +116,20 @@ struct		s_opt
   int		lustre_mp_fd;
 }		cpt_opt;
 
-#define CT_ERROR(_rc, _format, ...)					\
-	llapi_error(LLAPI_MSG_ERROR, _rc,				\
-		    "%f %s[%ld]: "#_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+#define CT_ERROR(_rc, _format, ...)				\
+	_trace(_rc,						\
+	       ERR, #_format,					\
+	       ## __VA_ARGS__)
 
-#define CT_DEBUG(_format, ...)						\
-	llapi_error(LLAPI_MSG_DEBUG | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "#_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+#define CT_WARN(_format, ...)					\
+	_trace(0,						\
+	       WARN, #_format,					\
+	       ## __VA_ARGS__)
 
-#define CT_WARN(_format, ...) \
-	llapi_error(LLAPI_MSG_WARN | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "#_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
-
-#define CT_TRACE(_format, ...)						\
-	llapi_error(LLAPI_MSG_INFO | LLAPI_MSG_NO_ERRNO, 0,		\
-		    "%f %s[%ld]: "#_format,				\
-		    ct_now(), cmd_name, syscall(SYS_gettid), ## __VA_ARGS__)
+#define CT_TRACE(_format, ...)					\
+	_trace(0,						\
+	       TRACE, #_format,					\
+	       ## __VA_ARGS__)
 
 /**
  * @brief Function that initialize cpt_opt structure containing informations such
@@ -218,7 +215,6 @@ get_opt(int ac,
 	d_name = optarg;
 	break;
       }
-  DPRINTF("name = %s - path = %s\n", d_name, d_path);
   if ((!d_path) || (!d_name)) /**< if no droplet name or path are specified */
     {
       ret = -EINVAL;
@@ -297,7 +293,6 @@ cpt_begin(struct hsm_copyaction_private **phcp,
       CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed\n", src);
       return (ret);
     }
-  DPRINTF("Action begin_restore worked properly.\n");
   return (ret);
 }
 
@@ -335,8 +330,7 @@ cpt_end(struct hsm_copyaction_private **phcp,
     ret = llapi_hsm_action_begin(&hcp, ctdata, hai, -1, 0, true); /**< if phcp is NULL initiate it */
     if (ret < 0)
       {
-	CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed",
-		 lstr);
+	CT_ERROR(ret, "llapi_hsm_action_begin() on '%s' failed", lstr);
 	return ret;
       }
     phcp = &hcp;
@@ -416,7 +410,6 @@ archive_attr(int src_fd,
   int			ret;
 
   dict_var = dpl_dict_new(DPL_DICT_NB);
-  DPRINTF("Commencing action saving xattr.\n");
   xattr_size = fgetxattr(src_fd, XATTR_LUSTRE_LOV, lov_buff,
 			 sizeof(lov_buff));
   if (xattr_size < 0)
@@ -425,8 +418,6 @@ archive_attr(int src_fd,
       CT_ERROR(ret, "Cannot get xattr info on '%s'", src);
       return (NULL);
   }
-
-  DPRINTF("Archiving xattr %s.\n", lov_buff);
 
   lum = (void *)lov_buff;
 
@@ -470,7 +461,7 @@ restore_attr (dpl_dict_t *dict_var, int lustre_fd)
   dict_cl = dpl_dict_get(dict_var, XATTR_LUSTRE_LOV);
   if (dict_cl == NULL)
     {
-      DPRINTF("dpl_dict_get failed to retrieve xattr.\n");
+      CT_ERROR(-EINVAL, "dpl_dict_get failed to retrieve xattr.");
       return (-1);
     }
   val = dict_cl->val;
@@ -572,8 +563,6 @@ archive_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  DPRINTF("BN_bn2hex done successfully for operation archive data.\n");
-
   if (src_st.st_size > 0)
     {
       buff_data = mmap(NULL, src_st.st_size, PROT_READ, MAP_PRIVATE, src_fd, 0); /**< mmaping the data */
@@ -622,16 +611,13 @@ archive_data(const struct hsm_action_item *hai,
     }
 
   ret2 = cpt_end(&hcp, hai, 0, ret); /**< notify coordinator end */
-  DPRINTF("Coordinator successfully notified for action archive.\n");
+  CT_TRACE("Coordinator successfully notified for action archive.");
   ret = ret2;
 
   if (!(src_fd < 0))
-    {
-      DPRINTF("Fd for archive : Successfully closed.\n");
-      close(src_fd);
-    }
+    close(src_fd);
 
-  DPRINTF("Archive operation successfully ended.\n");
+  CT_TRACE("Archive operation successfully ended.");
   return (ret);
 }
 
@@ -686,8 +672,6 @@ restore_data(const struct hsm_action_item *hai,
       goto end;
     }
 
-  DPRINTF("Using BNHEX = %s.\n", bnhex);
-
   dpl_ret = dpl_get_id(ctx, NULL, bnhex, &dpl_opts, DPL_FTYPE_REG, NULL, NULL, &buff_data, &lenp, &dict_var, NULL); /**< retrieve the data and attr from the Ring*/
   if (dpl_ret != DPL_SUCCESS)
     {
@@ -714,7 +698,6 @@ restore_data(const struct hsm_action_item *hai,
       ret = ret2;
       goto end;
     }
-  DPRINTF("Mdt index retrieved for operation restore data.\n");
 
   ret2 = cpt_begin(&hcp, hai, mdt_index, open_flags); /**< notifying coordinator of start */
   if (ret2 < 0)
@@ -737,7 +720,6 @@ restore_data(const struct hsm_action_item *hai,
       CT_ERROR(ret, "Cannot open Lustre fd for operation restore data.");
       goto end;
     }
-  DPRINTF("File fd '%d' successfully opened for operation restore data.\n", lustre_fd);
 
   //FIXME Range to be implemented for large size data with offset(?).
 
@@ -747,11 +729,8 @@ restore_data(const struct hsm_action_item *hai,
       if (ret2 < 0)
 	{
 	  CT_ERROR(ret2, "Cannot set ATTR properly for action restore.");
-	  DPRINTF("Error : %s.\n", strerror(errno));
 	  ret = ret2;
 	}
-      else
-	DPRINTF("ATTR were set properly for action restore.\n");
     }
 
   //offset = hai->hai_extent.length; -> Range implementation to be fixed.
@@ -760,7 +739,6 @@ restore_data(const struct hsm_action_item *hai,
   if (ret2 < 0)
     {
       CT_ERROR(ret, "Couldn't properly write on Lustre's fd for action restore.");
-      DPRINTF("Error : %s.\n", strerror(errno));
       ret = ret2;
       goto end;
     }
@@ -770,7 +748,7 @@ restore_data(const struct hsm_action_item *hai,
  end:
 
   ret2 = cpt_end(&hcp, hai, 0, ret); /**< notifying coordinator of end */
-  DPRINTF("Coordinator successfully notified for action restore.\n");
+  CT_TRACE("Coordinator successfully notified for action restore.");
   ret = ret2;
 
   if (buff_data)
@@ -1104,9 +1082,6 @@ cpt_run(dpl_ctx_t *ctx)
 	    return (-ENOMEM);
 	  tmp = BN_bn2hex(bn);
 
-	  DPRINTF("BIGNUM = %s\n", tmp);
-	  DPRINTF("Current action : %i\n", hai->hai_action);
-
 	  OPENSSL_free(tmp);
 
 	  process_async(hai, hal->hal_flags, ctx, bn); /**< @see cpt_thread() */
@@ -1178,7 +1153,7 @@ main(int ac,
     if ((ret = (daemonize())) < 0)
       return (ret);
 
-  DPRINTF("Values retrieved :\n"
+  CT_TRACE("Values retrieved :\n"
 	  "is_daemon : %d\n"
 	  "is_verbose : %d\n"
 	  "lustre_mp : %s\n",
@@ -1188,9 +1163,7 @@ main(int ac,
 
   for (i = 0; i < cpt_opt.arch_ind_count; i += 1)
     {
-      DPRINTF("Archive index retrieved :\n"
-	      "index %d\n",
-	      cpt_opt.arch_ind[i]);
+      CT_TRACE("Archive index retrieved : %d\n", cpt_opt.arch_ind[i]);
     }
 
   if ((ret = cpt_setup()) < 0)
