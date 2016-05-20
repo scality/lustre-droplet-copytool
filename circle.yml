@@ -1,0 +1,7 @@
+dependencies:
+  post:
+    - sudo pip install cpplint
+
+test:
+  override:
+    - cpplint $(git ls-files "*.h" "*.c")
