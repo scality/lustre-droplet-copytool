@@ -1023,6 +1023,8 @@ process_async(const struct hsm_action_item *hai,
  * @return Returns negative error value upon failure.
  */
 
+void  llapi_hsm_action_list_free(struct hsm_action_list **hal) __attribute__((weak));
+
 static int
 cpt_run(dpl_ctx_t *ctx)
 {
@@ -1088,7 +1090,7 @@ cpt_run(dpl_ctx_t *ctx)
 
 	  hai = hai_next(hai); /**< going to next item*/
 	}
-      //llapi_hsm_action_list_free(&hal);
+      if (llapi_hsm_action_list_free) llapi_hsm_action_list_free(&hal);
     }
 
   llapi_hsm_copytool_unregister(&cpt_data);
