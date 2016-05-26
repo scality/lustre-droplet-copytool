@@ -131,6 +131,10 @@ struct		s_opt
 	       TRACE, #_format,					\
 	       ## __VA_ARGS__)
 
+// Prototype of hal_free if it exists
+
+void		llapi_hsm_action_list_free(struct hsm_action_list **hal) __attribute__((weak));
+
 /**
  * @brief Function that initialize cpt_opt structure containing informations such
  * as is the copytool launched as daemon and what parameters it's using
@@ -1022,8 +1026,6 @@ process_async(const struct hsm_action_item *hai,
  * @see process_async()
  * @return Returns negative error value upon failure.
  */
-
-void  llapi_hsm_action_list_free(struct hsm_action_list **hal) __attribute__((weak));
 
 static int
 cpt_run(dpl_ctx_t *ctx)
