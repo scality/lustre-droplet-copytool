@@ -131,10 +131,6 @@ struct		s_opt
 	       TRACE, #_format,					\
 	       ## __VA_ARGS__)
 
-// Prototype of hal_free if it exists
-
-void		llapi_hsm_action_list_free(struct hsm_action_list **hal) __attribute__((weak));
-
 /**
  * @brief Function that initialize cpt_opt structure containing informations such
  * as is the copytool launched as daemon and what parameters it's using
@@ -1092,7 +1088,9 @@ cpt_run(dpl_ctx_t *ctx)
 
 	  hai = hai_next(hai); /**< going to next item*/
 	}
-      if (llapi_hsm_action_list_free) llapi_hsm_action_list_free(&hal);
+      #if HAVE_LLAPI_HSM_ACTION_LIST_FREE
+      llapi_hsm_action_list_free(&hal);
+      #endif
     }
 
   llapi_hsm_copytool_unregister(&cpt_data);
