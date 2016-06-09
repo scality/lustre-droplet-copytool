@@ -1,0 +1,7 @@
+dependencies:
+  post:
+    - sudo pip install cpplint
+
+test:
+  override:
+    - cpplint --filter=-legal,-build/header_guard,-readability/casting,-runtime/int,-build/include_what_you_use,-runtime/printf $(git ls-files "*.h" "*.c")
